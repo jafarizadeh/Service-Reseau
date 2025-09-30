@@ -5,6 +5,15 @@
 void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
     printf("Packet captured!\n");
     printf(" -> Length: %d bytes\n", header->len);
+
+        // Print each byte in hex format
+    for (int i = 0; i < header->len; i++) {
+        printf("%02x ", packet[i]); // %02x → 2-digit hex, padded with zero
+
+        // Add newline every 16 bytes
+        if ((i + 1) % 16 == 0)
+            printf("\n");
+    }
 }
  
 int main(int argc, char *argv[]) {
