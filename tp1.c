@@ -59,23 +59,67 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
             printf("Code            : %d\n", packet[35]);
             printf("Checksum        : %02x %02x\n", packet[36], packet[37]);
         }
-        else if (packet[23] == 0x06)
-        {
-            printf("(TCP)\n");
+        else if (packet[23] == 0x06) {
+    printf("(TCP)\n");
 
-            printf("\n=== TCP Header ===\n");
-            printf("Source Port     : %d\n", (packet[34] << 8) | packet[35]);
-            printf("Destination Port: %d\n", (packet[36] << 8) | packet[37]);
-        }
+    printf("\n=== TCP Header ===\n");
 
-        else if (packet[23] == 0x11)
-        {
-            printf("(UDP)\n");
+    unsigned short src_port = (packet[34] << 8) | packet[35];
+    unsigned short dst_port = (packet[36] << 8) | packet[37];
+    unsigned int seq = (packet[38] << 24) | (packet[39] << 16) | (packet[40] << 8) | packet[41];
+    unsigned int ack = (packet[42] << 24) | (packet[43] << 16) | (packet[44] << 8) | packet[45];
+    unsigned char flags = packet[47];
 
-            printf("\n=== UDP Header ===\n");
-            printf("Source Port     : %d\n", (packet[34] << 8) | packet[35]);
-            printf("Destination Port: %d\n", (packet[36] << 8) | packet[37]);
-        }
+    printf("Source Port     : %u\n", src_port);
+    printf("Destination Port: %u\n", dst_port);
+    printf("Sequence Number : %u\n", seq);
+    printf("Ack Number      : %u\n", ack);
+
+    printf("Flags           : ");
+    if (flags & 0x01) printf("FIN ");
+    if (flags & 0x02) printf("SYN ");
+    if (flags & 0x04) printf("RST ");
+    if (flags & 0x08) printf("PSH ");
+    if (flags & 0x10) printf("ACK ");
+    if (flags & 0x20) printf("URG ");
+    printf("\n");
+
+    printf("Service         : ");
+    switch (dst_port) {
+        case 80:  printf("HTTP\n"); break;
+        case 443: printf("HTTPS\n"); break;
+        case 22:  printf("SSH\n"); break;
+        case 25:  printf("SMTP\n"); break;
+        case 110: printf("POP3\n"); break;
+        case 143: printf("IMAP\n"); break;
+        default:  printf("Unknown or Uncommon\n"); break;
+    }
+}
+
+
+        else if (packet[23] == 0x11) {
+    printf("(UDP)\n");
+
+    printf("\n=== UDP Header ===\n");
+
+    unsigned short src_port = (packet[34] << 8) | packet[35];
+    unsigned short dst_port = (packet[36] << 8) | packet[37];
+    unsigned short length    = (packet[38] << 8) | packet[39];
+    unsigned short checksum  = (packet[40] << 8) | packet[41];
+
+    printf("Source Port     : %u\n", src_port);
+    printf("Destination Port: %u\n", dst_port);
+    printf("Length          : %u bytes\n", length);
+    printf("Checksum        : %04x\n", checksum);
+
+    printf("Service         : ");
+    switch (dst_port) {
+        case 53:  printf("DNS\n"); break;
+        case 123: printf("NTP\n"); break;
+        default:  printf("Unknown or Uncommon\n"); break;
+    }
+}
+
 
         else
             printf("(Unknown)\n");
