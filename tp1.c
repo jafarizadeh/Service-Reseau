@@ -7,55 +7,66 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 
     printf("=== Ethernet Header ===\n");
 
-    // Destination MAC (bytes 0–5)
     printf("Destination MAC : ");
-    for (int i = 0; i < 6; i++) {
-        printf("%02x ", packet[i]);
-    }
+    for (int i = 0; i < 6; i++) printf("%02x ", packet[i]);
     printf("\n");
 
-    // Source MAC (bytes 6–11)
     printf("Source MAC      : ");
-    for (int i = 6; i < 12; i++) {
-        printf("%02x ", packet[i]);
-    }
+    for (int i = 6; i < 12; i++) printf("%02x ", packet[i]);
     printf("\n");
 
-    // EtherType (bytes 12–13)
     printf("EtherType       : %02x %02x\n", packet[12], packet[13]);
 
-    printf("\n=== IP Header (if IPv4) ===\n");
+    // ARP: EtherType == 08 06
+    if (packet[12] == 0x08 && packet[13] == 0x06) {
+        printf("\n=== ARP Packet ===\n");
 
-    // Basic assumption: if EtherType is 0x08 00, it's IPv4
+        printf("Sender MAC      : ");
+        for (int i = 22; i < 28; i++) printf("%02x ", packet[i]);
+        printf("\n");
+
+        printf("Sender IP       : %d.%d.%d.%d\n", packet[28], packet[29], packet[30], packet[31]);
+
+        printf("Target MAC      : ");
+        for (int i = 32; i < 38; i++) printf("%02x ", packet[i]);
+        printf("\n");
+
+        printf("Target IP       : %d.%d.%d.%d\n", packet[38], packet[39], packet[40], packet[41]);
+    }
+
+    // IPv4: EtherType == 08 00
     if (packet[12] == 0x08 && packet[13] == 0x00) {
-        // Source IP (bytes 26–29)
-        printf("Source IP       : %d.%d.%d.%d\n", packet[26], packet[27], packet[28], packet[29]);
+        printf("\n=== IP Header (if IPv4) ===\n");
 
-        // Destination IP (bytes 30–33)
+        printf("Source IP       : %d.%d.%d.%d\n", packet[26], packet[27], packet[28], packet[29]);
         printf("Destination IP  : %d.%d.%d.%d\n", packet[30], packet[31], packet[32], packet[33]);
 
-        // Protocol (byte 23)
         printf("Protocol        : %02x ", packet[23]);
-        if (packet[23] == 0x01)
+        if (packet[23] == 0x01) {
             printf("(ICMP)\n");
-        else if (packet[23] == 0x06)
+
+            // ICMP Header starts after IP header (assumed 20 bytes)
+            printf("\n=== ICMP Header ===\n");
+            printf("Type            : %d\n", packet[34]);
+            printf("Code            : %d\n", packet[35]);
+            printf("Checksum        : %02x %02x\n", packet[36], packet[37]);
+
+        } else if (packet[23] == 0x06)
             printf("(TCP)\n");
         else if (packet[23] == 0x11)
             printf("(UDP)\n");
         else
             printf("(Unknown)\n");
-    } else {
-        printf("Not an IPv4 packet. Skipping IP info.\n");
     }
 
     printf("\n=== Raw Hex Dump ===\n");
-
     for (int i = 0; i < header->len; i++) {
         printf("%02x ", packet[i]);
         if ((i + 1) % 16 == 0) printf("\n");
     }
-    printf("\n");
+    printf("\n--------------------------------------------------\n\n");
 }
+
 
  
 int main(int argc, char *argv[]) {
