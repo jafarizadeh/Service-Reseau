@@ -12,6 +12,20 @@
 #include <netinet/udp.h>    // struct udphdr
 #include <netinet/ip_icmp.h>// struct icmphdr (or icmp on some BSDs)
 
+
+/* --- ICMP portability (Linux: struct icmphdr, macOS/BSD: struct icmp) --- */
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+  #define ICMPHDR        struct icmp
+  #define ICMP_TYPE(h)   ((h)->icmp_type)
+  #define ICMP_CODE(h)   ((h)->icmp_code)
+  #define ICMP_CKSUM(h)  ((h)->icmp_cksum)
+#else
+  #define ICMPHDR        struct icmphdr
+  #define ICMP_TYPE(h)   ((h)->type)
+  #define ICMP_CODE(h)   ((h)->code)
+  #define ICMP_CKSUM(h)  ((h)->checksum)
+#endif
+
 static int g_verbose = 2; // default v=2
 
 // --- tiny compatibility helpers (Linux vs BSD field names) ---
@@ -138,22 +152,28 @@ static void parse_arp(const struct pcap_pkthdr *header, const u_char *packet) {
 // === Display ICMP Header (IPv4) ===
 static void parse_icmp(const struct pcap_pkthdr *header, const u_char *packet) {
     if (g_verbose < 2) return;
-    size_t l2; uint16_t et; if (parse_l2(header, packet, &l2, &et) < 0) return;
+
+    // L2 + EtherType (handles single VLAN); require IPv4
+    size_t l2; uint16_t et;
+    if (parse_l2(header, packet, &l2, &et) < 0) return;
     if (et != ETHERTYPE_IP) return;
 
+    // IPv4 header and dynamic IHL
     if (!ensure_len(header, l2 + sizeof(struct ip))) { puts("(ICMP) truncated (IP)"); return; }
     const struct ip *ip = (const struct ip *)(packet + l2);
     uint8_t ihl = ip->ip_hl * 4;
     if (ihl < sizeof(struct ip)) { puts("(ICMP) invalid IHL"); return; }
-    if (!ensure_len(header, l2 + ihl + sizeof(struct icmphdr))) { puts("(ICMP) truncated (L4)"); return; }
+    if (!ensure_len(header, l2 + ihl + sizeof(ICMPHDR))) { puts("(ICMP) truncated (L4)"); return; }
 
-    const struct icmphdr *icmph = (const struct icmphdr *)((const u_char *)ip + ihl);
+    // ICMP header (portable name via ICMPHDR macro)
+    const ICMPHDR *icmph = (const ICMPHDR *)((const u_char *)ip + ihl);
 
     printf("\n=== ICMP Header ===\n");
-    printf("Type            : %u\n", icmph->type);
-    printf("Code            : %u\n", icmph->code);
-    printf("Checksum        : 0x%04x\n", ntohs(icmph->checksum));
+    printf("Type            : %u\n", ICMP_TYPE(icmph));
+    printf("Code            : %u\n", ICMP_CODE(icmph));
+    printf("Checksum        : 0x%04x\n", ntohs(ICMP_CKSUM(icmph)));
 }
+
 
 // === Display TCP Header (IPv4) ===
 static void parse_tcp(const struct pcap_pkthdr *header, const u_char *packet) {
@@ -222,15 +242,21 @@ static void parse_tcp(const struct pcap_pkthdr *header, const u_char *packet) {
 // === Display UDP Header (IPv4) ===
 static void parse_udp(const struct pcap_pkthdr *header, const u_char *packet) {
     if (g_verbose < 2) return;
-    size_t l2; uint16_t et; if (parse_l2(header, packet, &l2, &et) < 0) return;
+
+    // L2 + EtherType (handles single VLAN); require IPv4
+    size_t l2; uint16_t et;
+    if (parse_l2(header, packet, &l2, &et) < 0) return;
     if (et != ETHERTYPE_IP) return;
 
+    // IPv4 header and dynamic IHL
     if (!ensure_len(header, l2 + sizeof(struct ip))) { puts("(UDP) truncated (IP)"); return; }
     const struct ip *ip = (const struct ip *)(packet + l2);
     uint8_t ihl = ip->ip_hl * 4;
-    if (ihl < sizeof(struct ip)) { puts("(UDP) invalid IHL)"); return; }
+    if (ihl < sizeof(struct ip)) { puts("(UDP) invalid IHL"); return; }
+    if (ip->ip_p != IPPROTO_UDP) return;
     if (!ensure_len(header, l2 + ihl + sizeof(struct udphdr))) { puts("(UDP) truncated (L4)"); return; }
 
+    // UDP header
     const struct udphdr *uh = (const struct udphdr *)((const u_char *)ip + ihl);
 
     uint16_t sp = udp_sport(uh);
@@ -241,7 +267,7 @@ static void parse_udp(const struct pcap_pkthdr *header, const u_char *packet) {
 #elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
     uint16_t length   = ntohs(uh->uh_ulen);
     uint16_t checksum = ntohs(uh->uh_sum);
-else
+#else
     uint16_t length   = ntohs(uh->len);
     uint16_t checksum = ntohs(uh->check);
 #endif
@@ -252,8 +278,9 @@ else
     printf("Length          : %u bytes\n", length);
     printf("Checksum        : 0x%04x\n", checksum);
 
-    printf("Service         : ");
+    // Simple service hint using min(src,dst)
     uint16_t svc = (dp < sp ? dp : sp);
+    printf("Service         : ");
     switch (svc) {
         case 53:   printf("DNS\n"); break;
         case 67:
@@ -263,6 +290,7 @@ else
         default:   printf("Unknown or Uncommon\n"); break;
     }
 }
+
 
 // === Display DNS Packet (kept minimal; now uses struct ip/udphdr for offsets) ===
 static void parse_dns_packet(const struct pcap_pkthdr *header, const u_char *packet) {
