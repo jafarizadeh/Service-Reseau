@@ -2,10 +2,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>   // getopt
+#include <unistd.h>
 #include <ctype.h>
+#include <errno.h>
 
 static int g_verbose = 2; // default v=2
+
+// === small safety helper: check we won't read beyond packet ===
+static int ensure_len(const struct pcap_pkthdr *hdr, size_t need) {
+    return hdr->len >= need;
+}
 
 // === Utility: Print MAC Address ===
 void print_mac(const char *label, const u_char *addr) {
@@ -24,133 +30,139 @@ void print_ip(const char *label, const u_char *addr) {
 }
 
 // === Display ARP Packet ===
-void parse_arp(const u_char *packet) {
-    if (g_verbose >= 2) {
-        printf("\n=== ARP Packet ===\n");
-        print_mac("Sender MAC      : ", packet + 22);
-        print_ip ("Sender IP       : ", packet + 28);
-        print_mac("Target MAC      : ", packet + 32);
-        print_ip ("Target IP       : ", packet + 38);
-    }
+void parse_arp(const struct pcap_pkthdr *header, const u_char *packet) {
+    if (g_verbose < 2) return;
+    if (!ensure_len(header, 42)) { puts("(ARP) truncated"); return; }
+
+    printf("\n=== ARP Packet ===\n");
+    print_mac("Sender MAC      : ", packet + 22);
+    print_ip ("Sender IP       : ", packet + 28);
+    print_mac("Target MAC      : ", packet + 32);
+    print_ip ("Target IP       : ", packet + 38);
 }
 
 // === Display ICMP Header ===
-void parse_icmp(const u_char *packet) {
-    if (g_verbose >= 2) {
-        printf("\n=== ICMP Header ===\n");
-        printf("Type            : %d\n", packet[34]);
-        printf("Code            : %d\n", packet[35]);
-        printf("Checksum        : %02x %02x\n", packet[36], packet[37]);
-    }
+void parse_icmp(const struct pcap_pkthdr *header, const u_char *packet) {
+    if (g_verbose < 2) return;
+    if (!ensure_len(header, 38)) { puts("(ICMP) truncated"); return; }
+
+    printf("\n=== ICMP Header ===\n");
+    printf("Type            : %d\n", packet[34]);
+    printf("Code            : %d\n", packet[35]);
+    printf("Checksum        : %02x %02x\n", packet[36], packet[37]);
 }
 
 // === Display TCP Header ===
-void parse_tcp(const u_char *packet) {
-    if (g_verbose >= 2) {
-        printf("\n=== TCP Header ===\n");
+void parse_tcp(const struct pcap_pkthdr *header, const u_char *packet) {
+    if (g_verbose < 2) return;
+    if (!ensure_len(header, 54)) { puts("(TCP) truncated"); return; }
 
-        unsigned short src_port = (packet[34] << 8) | packet[35];
-        unsigned short dst_port = (packet[36] << 8) | packet[37];
-        unsigned int seq = (packet[38] << 24) | (packet[39] << 16) | (packet[40] << 8) | packet[41];
-        unsigned int ack = (packet[42] << 24) | (packet[43] << 16) | (packet[44] << 8) | packet[45];
-        unsigned char flags = packet[47];
+    printf("\n=== TCP Header ===\n");
 
-        printf("Source Port     : %u\n", src_port);
-        printf("Destination Port: %u\n", dst_port);
-        printf("Sequence Number : %u\n", seq);
-        printf("Ack Number      : %u\n", ack);
+    unsigned short src_port = (packet[34] << 8) | packet[35];
+    unsigned short dst_port = (packet[36] << 8) | packet[37];
+    unsigned int seq = (packet[38] << 24) | (packet[39] << 16) | (packet[40] << 8) | packet[41];
+    unsigned int ack = (packet[42] << 24) | (packet[43] << 16) | (packet[44] << 8) | packet[45];
+    unsigned char flags = packet[47];
 
-        printf("Flags           : ");
-        if (flags & 0x01) printf("FIN ");
-        if (flags & 0x02) printf("SYN ");
-        if (flags & 0x04) printf("RST ");
-        if (flags & 0x08) printf("PSH ");
-        if (flags & 0x10) printf("ACK ");
-        if (flags & 0x20) printf("URG ");
-        printf("\n");
+    printf("Source Port     : %u\n", src_port);
+    printf("Destination Port: %u\n", dst_port);
+    printf("Sequence Number : %u\n", seq);
+    printf("Ack Number      : %u\n", ack);
 
-        printf("Service         : ");
-        switch (dst_port) {
-            case 80:  printf("HTTP\n"); break;
-            case 443: printf("HTTPS\n"); break;
-            case 22:  printf("SSH\n"); break;
-            case 25:  printf("SMTP\n"); break;
-            case 110: printf("POP3\n"); break;
-            case 143: printf("IMAP\n"); break;
-            default:  printf("Unknown or Uncommon\n"); break;
-        }
+    printf("Flags           : ");
+    if (flags & 0x01) printf("FIN ");
+    if (flags & 0x02) printf("SYN ");
+    if (flags & 0x04) printf("RST ");
+    if (flags & 0x08) printf("PSH ");
+    if (flags & 0x10) printf("ACK ");
+    if (flags & 0x20) printf("URG ");
+    printf("\n");
+
+    printf("Service         : ");
+    switch (dst_port) {
+        case 80:  printf("HTTP\n"); break;
+        case 443: printf("HTTPS\n"); break;
+        case 22:  printf("SSH\n"); break;
+        case 25:  printf("SMTP\n"); break;
+        case 110: printf("POP3\n"); break;
+        case 143: printf("IMAP\n"); break;
+        default:  printf("Unknown or Uncommon\n"); break;
     }
 }
 
 // === Display UDP Header ===
-void parse_udp(const u_char *packet) {
-    if (g_verbose >= 2) {
-        printf("\n=== UDP Header ===\n");
+void parse_udp(const struct pcap_pkthdr *header, const u_char *packet) {
+    if (g_verbose < 2) return;
+    if (!ensure_len(header, 42)) { puts("(UDP) truncated"); return; }
 
-        unsigned short src_port = (packet[34] << 8) | packet[35];
-        unsigned short dst_port = (packet[36] << 8) | packet[37];
-        unsigned short length   = (packet[38] << 8) | packet[39];
-        unsigned short checksum = (packet[40] << 8) | packet[41];
+    printf("\n=== UDP Header ===\n");
 
-        printf("Source Port     : %u\n", src_port);
-        printf("Destination Port: %u\n", dst_port);
-        printf("Length          : %u bytes\n", length);
-        printf("Checksum        : %04x\n", checksum);
+    unsigned short src_port = (packet[34] << 8) | packet[35];
+    unsigned short dst_port = (packet[36] << 8) | packet[37];
+    unsigned short length   = (packet[38] << 8) | packet[39];
+    unsigned short checksum = (packet[40] << 8) | packet[41];
 
-        printf("Service         : ");
-        switch (dst_port) {
-            case 53:   printf("DNS\n"); break;
-            case 67:
-            case 68:   printf("DHCP\n"); break;
-            case 123:  printf("NTP\n"); break;
-            case 5353: printf("mDNS (Multicast DNS)\n"); break;
-            default:   printf("Unknown or Uncommon\n"); break;
-        }
+    printf("Source Port     : %u\n", src_port);
+    printf("Destination Port: %u\n", dst_port);
+    printf("Length          : %u bytes\n", length);
+    printf("Checksum        : %04x\n", checksum);
+
+    printf("Service         : ");
+    switch (dst_port) {
+        case 53:   printf("DNS\n"); break;
+        case 67:
+        case 68:   printf("DHCP\n"); break;
+        case 123:  printf("NTP\n"); break;
+        case 5353: printf("mDNS (Multicast DNS)\n"); break;
+        default:   printf("Unknown or Uncommon\n"); break;
     }
 }
 
 // === Display DNS Packet ===
-void parse_dns_packet(const u_char *packet) {
-    if (g_verbose >= 2) {
-        const u_char *dns = packet + 42;
+void parse_dns_packet(const struct pcap_pkthdr *header, const u_char *packet) {
+    if (g_verbose < 2) return;
+    if (!ensure_len(header, 42 + 12)) { puts("(DNS) truncated"); return; }
 
-        unsigned short transaction_id = (dns[0] << 8) | dns[1];
-        unsigned short flags = (dns[2] << 8) | dns[3];
-        unsigned short questions = (dns[4] << 8) | dns[5];
+    const u_char *dns = packet + 42;
 
-        printf("\n=== DNS Packet ===\n");
-        printf("Transaction ID   : 0x%04x\n", transaction_id);
-        printf("Flags            : 0x%04x\n", flags);
-        printf("Questions        : %d\n", questions);
+    unsigned short transaction_id = (dns[0] << 8) | dns[1];
+    unsigned short flags = (dns[2] << 8) | dns[3];
+    unsigned short questions = (dns[4] << 8) | dns[5];
 
-        printf("Query Domain     : ");
-        int index = 12;  // domain name starts at byte 12
-        while (dns[index] != 0) {
-            int len = dns[index++];
-            for (int i = 0; i < len; i++) printf("%c", dns[index++]);
-            if (dns[index] != 0) printf(".");
-        }
-        printf("\n");
+    printf("\n=== DNS Packet ===\n");
+    printf("Transaction ID   : 0x%04x\n", transaction_id);
+    printf("Flags            : 0x%04x\n", flags);
+    printf("Questions        : %d\n", questions);
+
+    printf("Query Domain     : ");
+    int index = 12;  // domain name starts at byte 12
+    while (dns[index] != 0 && (42 + index) < (int)header->len) {
+        int len = dns[index++];
+        for (int i = 0; i < len && (42 + index) < (int)header->len; i++) printf("%c", dns[index++]);
+        if (dns[index] != 0) printf(".");
     }
+    printf("\n");
 }
 
 // === Display DHCP Packet ===
-void parse_dhcp_packet(const u_char *packet) {
-    if (g_verbose >= 2) {
-        const u_char *dhcp = packet + 42;
+void parse_dhcp_packet(const struct pcap_pkthdr *header, const u_char *packet) {
+    if (g_verbose < 2) return;
+    if (!ensure_len(header, 42 + 240)) { puts("(DHCP/BOOTP) truncated"); return; }
 
-        unsigned int xid = (dhcp[4] << 24) | (dhcp[5] << 16) | (dhcp[6] << 8) | dhcp[7];
-        unsigned char client_mac[6];
-        for (int i = 0; i < 6; i++) client_mac[i] = dhcp[28 + i];
+    const u_char *dhcp = packet + 42;
 
-        printf("\n=== DHCP Packet ===\n");
-        printf("Transaction ID   : 0x%08x\n", xid);
-        printf("Client MAC       : %02x:%02x:%02x:%02x:%02x:%02x\n",
-               client_mac[0], client_mac[1], client_mac[2],
-               client_mac[3], client_mac[4], client_mac[5]);
-        printf("Your IP          : %d.%d.%d.%d\n",
-               dhcp[16], dhcp[17], dhcp[18], dhcp[19]);
-    }
+    unsigned int xid = (dhcp[4] << 24) | (dhcp[5] << 16) | (dhcp[6] << 8) | dhcp[7];
+    unsigned char client_mac[6];
+    for (int i = 0; i < 6; i++) client_mac[i] = dhcp[28 + i];
+
+    printf("\n=== DHCP Packet ===\n");
+    printf("Transaction ID   : 0x%08x\n", xid);
+    printf("Client MAC       : %02x:%02x:%02x:%02x:%02x:%02x\n",
+           client_mac[0], client_mac[1], client_mac[2],
+           client_mac[3], client_mac[4], client_mac[5]);
+    printf("Your IP          : %d.%d.%d.%d\n",
+           dhcp[16], dhcp[17], dhcp[18], dhcp[19]);
 }
 
 // === Display Raw Packet in Hex ===
@@ -169,10 +181,13 @@ void print_raw_hex(const u_char *packet, int len) {
 void print_summary(const struct pcap_pkthdr *header, const u_char *packet) {
     if (g_verbose != 1) return;
 
+    if (!ensure_len(header, 14)) { printf("[TRUNC] len=%u\n", header->len); return; }
+
     // EtherType
     unsigned short eth_type = ((unsigned short)packet[12] << 8) | packet[13];
 
     if (eth_type == 0x0806) { // ARP
+        if (!ensure_len(header, 42)) { printf("[ARP] len=%u (trunc)\n", header->len); return; }
         printf("[ARP] len=%u  %d.%d.%d.%d -> %d.%d.%d.%d\n",
                header->len,
                packet[28], packet[29], packet[30], packet[31],
@@ -181,12 +196,13 @@ void print_summary(const struct pcap_pkthdr *header, const u_char *packet) {
     }
 
     if (eth_type == 0x0800) { // IPv4
+        if (!ensure_len(header, 34)) { printf("[IPv4] len=%u (trunc)\n", header->len); return; }
         unsigned char proto = packet[23];
-        // IPs
         const u_char *sip = packet + 26;
         const u_char *dip = packet + 30;
 
         if (proto == 0x06) { // TCP
+            if (!ensure_len(header, 38)) { printf("[IPv4/TCP] len=%u (trunc)\n", header->len); return; }
             unsigned short sport = (packet[34] << 8) | packet[35];
             unsigned short dport = (packet[36] << 8) | packet[37];
             printf("[IPv4/TCP] len=%u  %d.%d.%d.%d:%u -> %d.%d.%d.%d:%u\n",
@@ -194,6 +210,7 @@ void print_summary(const struct pcap_pkthdr *header, const u_char *packet) {
                    sip[0],sip[1],sip[2],sip[3], sport,
                    dip[0],dip[1],dip[2],dip[3], dport);
         } else if (proto == 0x11) { // UDP
+            if (!ensure_len(header, 42)) { printf("[IPv4/UDP] len=%u (trunc)\n", header->len); return; }
             unsigned short sport = (packet[34] << 8) | packet[35];
             unsigned short dport = (packet[36] << 8) | packet[37];
             printf("[IPv4/UDP] len=%u  %d.%d.%d.%d:%u -> %d.%d.%d.%d:%u\n",
@@ -201,6 +218,7 @@ void print_summary(const struct pcap_pkthdr *header, const u_char *packet) {
                    sip[0],sip[1],sip[2],sip[3], sport,
                    dip[0],dip[1],dip[2],dip[3], dport);
         } else if (proto == 0x01) { // ICMP
+            if (!ensure_len(header, 34)) { printf("[IPv4/ICMP] len=%u (trunc)\n", header->len); return; }
             unsigned char icmp_type = packet[34];
             printf("[IPv4/ICMP] len=%u  %d.%d.%d.%d -> %d.%d.%d.%d  type=%u\n",
                    header->len,
@@ -216,21 +234,22 @@ void print_summary(const struct pcap_pkthdr *header, const u_char *packet) {
         return;
     }
 
-    // (IPv6 not handled in your current parser; will come in later phases)
+    // (IPv6 not handled yet)
     printf("[EtherType 0x%04x] len=%u\n", eth_type, header->len);
 }
 
 // === Callback: Main Packet Parser ===
 void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
 
-    // v=1: summary (1-line)
     if (g_verbose == 1) {
         print_summary(header, packet);
-        print_raw_hex(packet, header->len); // not print in v1
+        print_raw_hex(packet, header->len); // v=1: no-op
         return;
     }
 
-    // v>=2: 
+    if (!ensure_len(header, 14)) { printf("Truncated Ethernet frame (len=%u)\n", header->len); return; }
+
+    // v>=2: print simple data 
     printf("Packet captured!\n");
     printf(" -> Length: %d bytes\n\n", header->len);
 
@@ -242,10 +261,12 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 
     // ARP
     if (packet[12] == 0x08 && packet[13] == 0x06) {
-        parse_arp(packet);
+        parse_arp(header, packet);
     }
     // IPv4
     else if (packet[12] == 0x08 && packet[13] == 0x00) {
+        if (!ensure_len(header, 34)) { puts("(IPv4) truncated"); return; }
+
         printf("\n=== IP Header (IPv4) ===\n");
         print_ip("Source IP       : ", packet + 26);
         print_ip("Destination IP  : ", packet + 30);
@@ -256,23 +277,23 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
         switch (protocol) {
             case 0x01:
                 printf("(ICMP)\n");
-                parse_icmp(packet);
+                parse_icmp(header, packet);
                 break;
             case 0x06:
                 printf("(TCP)\n");
-                parse_tcp(packet);
+                parse_tcp(header, packet);
                 break;
             case 0x11: {
                 printf("(UDP)\n");
-                parse_udp(packet);
+                parse_udp(header, packet);
 
-                // UDP -> detect higher-level protocols
+                // UDP → detect higher-level protocols
                 unsigned short src_port = (packet[34] << 8) | packet[35];
                 unsigned short dst_port = (packet[36] << 8) | packet[37];
                 if (src_port == 53 || dst_port == 53)
-                    parse_dns_packet(packet);
+                    parse_dns_packet(header, packet);
                 else if ((src_port == 67 || dst_port == 67) || (src_port == 68 || dst_port == 68))
-                    parse_dhcp_packet(packet);
+                    parse_dhcp_packet(header, packet);
                 break;
             }
             default:
@@ -282,32 +303,67 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
         printf("Unknown EtherType, parsing skipped.\n");
     }
 
-    // Hex dump 
+    // Hex dump just in v=3
     print_raw_hex(packet, header->len);
 }
 
 // === Usage ===
 static void usage(const char *prog) {
     fprintf(stderr,
-        "Usage: %s -i <interface> [-v 1|2|3]\n"
-        "  -i <iface>   Live capture interface (required)\n"
-        "  -v <level>   Verbosity level: 1=summary, 2=synthetic (default), 3=full+hex\n",
+        "Usage: %s (-i <interface> | -o <pcapfile>) [-f \"bpf filter\"] [-v 1|2|3]\n"
+        "  -i <iface>   Live capture interface\n"
+        "  -o <file>    Read packets from pcap file (offline)\n"
+        "  -f <expr>    BPF filter expression (e.g., \"tcp port 80 or arp\")\n"
+        "  -v <level>   Verbosity: 1=summary, 2=synthetic (default), 3=full+hex\n",
         prog);
+}
+
+// === Apply BPF filter if provided ===
+static int apply_filter(pcap_t *handle, const char *iface_or_null, const char *bpf) {
+    if (!bpf) return 0;
+    struct bpf_program fp;
+    bpf_u_int32 net = 0, mask = 0;
+
+    if (iface_or_null) {
+        // For live: try to fetch net/mask; if fails, keep zeros
+        char errbuf[PCAP_ERRBUF_SIZE];
+        if (pcap_lookupnet(iface_or_null, &net, &mask, errbuf) == -1) {
+            fprintf(stderr, "pcap_lookupnet failed on %s: %s (using 0.0.0.0/0)\n", iface_or_null, errbuf);
+            net = 0; mask = 0;
+        }
+    } else {
+        // Offline: mask=0 per libpcap recommendations is fine
+        net = 0; mask = 0;
+    }
+
+    if (pcap_compile(handle, &fp, bpf, 1 /*optimize*/, mask) == -1) {
+        fprintf(stderr, "pcap_compile failed for filter '%s': %s\n", bpf, pcap_geterr(handle));
+        return -1;
+    }
+    if (pcap_setfilter(handle, &fp) == -1) {
+        fprintf(stderr, "pcap_setfilter failed: %s\n", pcap_geterr(handle));
+        pcap_freecode(&fp);
+        return -1;
+    }
+    pcap_freecode(&fp);
+    return 0;
 }
 
 // === Main Function ===
 int main(int argc, char *argv[]) {
-    pcap_t *handle;
+    pcap_t *handle = NULL;
     char errbuf[PCAP_ERRBUF_SIZE];
     char *iface = NULL;
+    char *pcapfile = NULL;
+    char *bpf = NULL;
     int opt;
 
-    // Parse CLI: -i (required), -v (optional)
-    while ((opt = getopt(argc, argv, "i:v:")) != -1) {
+    // Parse CLI
+    while ((opt = getopt(argc, argv, "i:o:f:v:")) != -1) {
         switch (opt) {
-            case 'i':
-                iface = optarg;
-                break;
+            case 'i': iface = optarg; break;
+            case 'o': pcapfile = optarg; break;
+            case 'f': bpf = optarg; break;
             case 'v':
                 g_verbose = atoi(optarg);
                 if (g_verbose < 1 || g_verbose > 3) {
@@ -322,23 +378,56 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (!iface) {
-        fprintf(stderr, "Error: -i <interface> is required.\n");
+    // Validate mode: exactly one of -i or -o
+    if ((iface && pcapfile) || (!iface && !pcapfile)) {
+        fprintf(stderr, "Error: specify exactly one of -i <iface> or -o <pcapfile>.\n");
         usage(argv[0]);
         return 1;
     }
 
-    // Open live capture 
-    handle = pcap_open_live(iface, 65535 /*snaplen*/, 1 /*promisc*/, 1000 /*timeout ms*/, errbuf);
-    if (handle == NULL) {
-        fprintf(stderr, "Error opening device %s: %s\n", iface, errbuf);
-        return 1;
-    }
+    if (iface) {
+        // Open live capture (snaplen 65535 to avoid payload truncation)
+        handle = pcap_open_live(iface, 65535, 1 /*promisc*/, 1000 /*timeout ms*/, errbuf);
+        if (handle == NULL) {
+            fprintf(stderr, "Error opening device %s: %s\n", iface, errbuf);
+            return 1;
+        }
+        if (apply_filter(handle, iface, bpf) == -1) {
+            pcap_close(handle);
+            return 1;
+        }
 
-    printf("Waiting for a packet on interface %s (verbosity=%d)...\n", iface, g_verbose);
-    // just one packet
-    pcap_loop(handle, 1, got_packet, NULL);
-    pcap_close(handle);
+        printf("Live capture on %s (verbosity=%d)%s\n",
+               iface, g_verbose, bpf ? " with filter" : "");
+        if (bpf) printf("BPF: %s\n", bpf);
+
+        // Continuous until ^C
+        if (pcap_loop(handle, -1, got_packet, NULL) == -1) {
+            fprintf(stderr, "pcap_loop error: %s\n", pcap_geterr(handle));
+        }
+        pcap_close(handle);
+    } else {
+        // Offline mode
+        handle = pcap_open_offline(pcapfile, errbuf);
+        if (handle == NULL) {
+            fprintf(stderr, "Error opening pcap file %s: %s\n", pcapfile, errbuf);
+            return 1;
+        }
+        if (apply_filter(handle, NULL, bpf) == -1) {
+            pcap_close(handle);
+            return 1;
+        }
+
+        printf("Offline read from %s (verbosity=%d)%s\n",
+               pcapfile, g_verbose, bpf ? " with filter" : "");
+        if (bpf) printf("BPF: %s\n", bpf);
+
+        // Process entire file
+        if (pcap_loop(handle, -1, got_packet, NULL) == -1) {
+            fprintf(stderr, "pcap_loop error: %s\n", pcap_geterr(handle));
+        }
+        pcap_close(handle);
+    }
 
     return 0;
 }
