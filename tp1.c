@@ -2,46 +2,95 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>  
+#include <unistd.h>      // getopt
 #include <ctype.h>
 #include <errno.h>
-#include <arpa/inet.h>
+#include <arpa/inet.h>   // ntohs/ntohl, inet_ntop
+#include <net/ethernet.h>   // struct ether_header, ETHERTYPE_*
+#include <netinet/ip.h>     // struct ip (BSD/Glibc)
+#include <netinet/tcp.h>    // struct tcphdr
+#include <netinet/udp.h>    // struct udphdr
+#include <netinet/ip_icmp.h>// struct icmphdr (or icmp on some BSDs)
 
 static int g_verbose = 2; // default v=2
 
-// === helpers for endian-safe reads ===
-static inline uint16_t rd16(const void *p) {
-    uint16_t v; memcpy(&v, p, sizeof v); return ntohs(v);
+// --- tiny compatibility helpers (Linux vs BSD field names) ---
+// TCP header length in bytes (handle th_off vs doff)
+static inline uint8_t tcp_hdr_len(const struct tcphdr *th) {
+#ifdef __APPLE__
+    return (th->th_off & 0x0F) * 4;
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    return (th->th_off & 0x0F) * 4;
+#else
+    return th->doff * 4; // glibc/linux
+#endif
 }
-static inline uint32_t rd32(const void *p) {
-    uint32_t v; memcpy(&v, p, sizeof v); return ntohl(v);
+
+// UDP src/dst ports (uh_sport/uh_dport vs source/dest)
+static inline uint16_t udp_sport(const struct udphdr *uh) {
+#ifdef __APPLE__
+    return ntohs(uh->uh_sport);
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    return ntohs(uh->uh_sport);
+#else
+    return ntohs(uh->source);
+#endif
+}
+static inline uint16_t udp_dport(const struct udphdr *uh) {
+#ifdef __APPLE__
+    return ntohs(uh->uh_dport);
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    return ntohs(uh->uh_dport);
+#else
+    return ntohs(uh->dest);
+#endif
+}
+
+// TCP src/dst (th_sport/th_dport vs source/dest)
+static inline uint16_t tcp_sport(const struct tcphdr *th) {
+#ifdef __APPLE__
+    return ntohs(th->th_sport);
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    return ntohs(th->th_sport);
+#else
+    return ntohs(th->source);
+#endif
+}
+static inline uint16_t tcp_dport(const struct tcphdr *th) {
+#ifdef __APPLE__
+    return ntohs(th->th_dport);
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    return ntohs(th->th_dport);
+#else
+    return ntohs(th->dest);
+#endif
 }
 
 // === small safety helper: ensure we won't read beyond captured buffer ===
-// Use caplen (captured length), not len (original on-wire length).
 static int ensure_len(const struct pcap_pkthdr *hdr, size_t need) {
-    return hdr->caplen >= need;
+    return hdr->caplen >= need; // use caplen (actual captured bytes)
 }
 
-// Compute L2 header length and EtherType (handles single VLAN tag).
-// Returns 0 on success, -1 on truncation/unsupported.
+// Compute L2 header length and EtherType (supports 1 VLAN tag)
 static int parse_l2(const struct pcap_pkthdr *header, const u_char *packet,
                     size_t *l2_len, uint16_t *eth_type) {
-    if (!ensure_len(header, 14)) {
-        fprintf(stderr, "Truncated Ethernet: need 14, caplen=%u\n", header->caplen);
+    if (!ensure_len(header, sizeof(struct ether_header))) {
+        fprintf(stderr, "Truncated Ethernet: need %zu, caplen=%u\n",
+                sizeof(struct ether_header), header->caplen);
         return -1;
     }
-    uint16_t t = rd16(packet + 12);
-    size_t l2 = 14;
+    const struct ether_header *eth = (const struct ether_header *)packet;
+    uint16_t t = ntohs(eth->ether_type);
+    size_t l2 = sizeof(struct ether_header);
 
-    // Single VLAN tag support (802.1Q / 802.1ad). For multiple tags, expand if needed.
+    // VLAN tag (0x8100/0x88a8): EtherType is 4 bytes after base header
     if (t == 0x8100 || t == 0x88a8) {
-        if (!ensure_len(header, 18)) {
-            fprintf(stderr, "Truncated VLAN header: need 18, caplen=%u\n", header->caplen);
+        if (!ensure_len(header, l2 + 4)) {
+            fprintf(stderr, "Truncated VLAN header: need %zu, caplen=%u\n", l2 + 4, header->caplen);
             return -1;
         }
-        t = rd16(packet + 16);
-        l2 = 18;
+        t = ntohs(*(const uint16_t *)(packet + l2 + 2));
+        l2 += 4;
     }
 
     *l2_len = l2;
@@ -50,94 +99,114 @@ static int parse_l2(const struct pcap_pkthdr *header, const u_char *packet,
 }
 
 // === Utility: Print MAC Address ===
-void print_mac(const char *label, const u_char *addr) {
+static void print_mac(const char *label, const u_char *addr) {
     if (g_verbose >= 2) {
-        printf("%s", label);
-        for (int i = 0; i < 6; i++) printf("%02x%s", addr[i], i==5?"\n":" ");
+        printf("%s%02x %02x %02x %02x %02x %02x\n",
+               label, addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
     }
 }
 
-// === Utility: Print IP Address (IPv4 only) ===
-void print_ip(const char *label, const u_char *addr) {
+// === Utility: Print IPv4 Address ===
+static void print_ipv4(const char *label, const struct in_addr *a) {
     if (g_verbose >= 2) {
-        printf("%s%d.%d.%d.%d\n", label, addr[0], addr[1], addr[2], addr[3]);
+        char buf[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, a, buf, sizeof buf);
+        printf("%s%s\n", label, buf);
     }
 }
 
-// === Display ARP Packet ===
-void parse_arp(const struct pcap_pkthdr *header, const u_char *packet) {
+// === Display ARP Packet (minimal, keep offsets) ===
+static void parse_arp(const struct pcap_pkthdr *header, const u_char *packet) {
     if (g_verbose < 2) return;
     size_t l2; uint16_t et; if (parse_l2(header, packet, &l2, &et) < 0) return;
-    if (et != 0x0806) return; // ARP
+    if (et != ETHERTYPE_ARP) return;
     if (!ensure_len(header, l2 + 28)) { puts("(ARP) truncated"); return; }
-    // Offsets below assume Ethernet/IPv4 ARP with standard sizes.
 
     printf("\n=== ARP Packet ===\n");
     print_mac("Sender MAC      : ", packet + l2 + 8);
-    print_ip ("Sender IP       : ", packet + l2 + 14);
+    {
+        struct in_addr sip = { .s_addr = *(const uint32_t *)(packet + l2 + 14) };
+        print_ipv4("Sender IP       : ", &sip);
+    }
     print_mac("Target MAC      : ", packet + l2 + 18);
-    print_ip ("Target IP       : ", packet + l2 + 24);
+    {
+        struct in_addr tip = { .s_addr = *(const uint32_t *)(packet + l2 + 24) };
+        print_ipv4("Target IP       : ", &tip);
+    }
 }
 
 // === Display ICMP Header (IPv4) ===
-void parse_icmp(const struct pcap_pkthdr *header, const u_char *packet) {
+static void parse_icmp(const struct pcap_pkthdr *header, const u_char *packet) {
     if (g_verbose < 2) return;
     size_t l2; uint16_t et; if (parse_l2(header, packet, &l2, &et) < 0) return;
-    if (et != 0x0800) return; // IPv4
-    if (!ensure_len(header, l2 + 20)) { puts("(ICMP) truncated (IP)"); return; }
+    if (et != ETHERTYPE_IP) return;
 
-    const u_char *ip = packet + l2;
-    uint8_t ihl = (ip[0] & 0x0F) * 4;
-    if (ihl < 20) { puts("(ICMP) invalid IHL"); return; }
-    if (!ensure_len(header, l2 + ihl + 4)) { puts("(ICMP) truncated (L4)"); return; }
+    if (!ensure_len(header, l2 + sizeof(struct ip))) { puts("(ICMP) truncated (IP)"); return; }
+    const struct ip *ip = (const struct ip *)(packet + l2);
+    uint8_t ihl = ip->ip_hl * 4;
+    if (ihl < sizeof(struct ip)) { puts("(ICMP) invalid IHL"); return; }
+    if (!ensure_len(header, l2 + ihl + sizeof(struct icmphdr))) { puts("(ICMP) truncated (L4)"); return; }
 
-    const u_char *icmp = ip + ihl;
+    const struct icmphdr *icmph = (const struct icmphdr *)((const u_char *)ip + ihl);
 
     printf("\n=== ICMP Header ===\n");
-    printf("Type            : %u\n", icmp[0]);
-    printf("Code            : %u\n", icmp[1]);
-    printf("Checksum        : 0x%04x\n", rd16(icmp + 2));
+    printf("Type            : %u\n", icmph->type);
+    printf("Code            : %u\n", icmph->code);
+    printf("Checksum        : 0x%04x\n", ntohs(icmph->checksum));
 }
 
 // === Display TCP Header (IPv4) ===
-void parse_tcp(const struct pcap_pkthdr *header, const u_char *packet) {
+static void parse_tcp(const struct pcap_pkthdr *header, const u_char *packet) {
     if (g_verbose < 2) return;
     size_t l2; uint16_t et; if (parse_l2(header, packet, &l2, &et) < 0) return;
-    if (et != 0x0800) return;
+    if (et != ETHERTYPE_IP) return;
 
-    if (!ensure_len(header, l2 + 20)) { puts("(TCP) truncated (IP)"); return; }
-    const u_char *ip = packet + l2;
-    uint8_t ihl = (ip[0] & 0x0F) * 4;
-    if (ihl < 20) { puts("(TCP) invalid IHL"); return; }
-    if (!ensure_len(header, l2 + ihl + 14)) { puts("(TCP) truncated (L4 min)"); return; }
+    if (!ensure_len(header, l2 + sizeof(struct ip))) { puts("(TCP) truncated (IP)"); return; }
+    const struct ip *ip = (const struct ip *)(packet + l2);
+    uint8_t ihl = ip->ip_hl * 4;
+    if (ihl < sizeof(struct ip)) { puts("(TCP) invalid IHL"); return; }
+    if (!ensure_len(header, l2 + ihl + sizeof(struct tcphdr))) { puts("(TCP) truncated (L4 min)"); return; }
 
-    const u_char *tcp = ip + ihl;
-    uint16_t src_port = rd16(tcp + 0);
-    uint16_t dst_port = rd16(tcp + 2);
-    uint32_t seq = rd32(tcp + 4);
-    uint32_t ack = rd32(tcp + 8);
-    uint8_t  doff = ((tcp[12] >> 4) & 0x0F) * 4;
-    uint8_t  flags = tcp[13];
-
-    if (!ensure_len(header, l2 + ihl + doff)) { puts("(TCP) truncated (options)"); return; }
+    const struct tcphdr *th = (const struct tcphdr *)((const u_char *)ip + ihl);
+    uint8_t thlen = tcp_hdr_len(th);
+    if (thlen < sizeof(struct tcphdr)) { puts("(TCP) invalid data offset"); return; }
+    if (!ensure_len(header, l2 + ihl + thlen)) { puts("(TCP) truncated (options)"); return; }
 
     printf("\n=== TCP Header ===\n");
-    printf("Source Port     : %u\n", src_port);
-    printf("Destination Port: %u\n", dst_port);
-    printf("Sequence Number : %u\n", seq);
-    printf("Ack Number      : %u\n", ack);
+    printf("Source Port     : %u\n", tcp_sport(th));
+    printf("Destination Port: %u\n", tcp_dport(th));
+#ifdef __APPLE__
+    printf("Sequence Number : %u\n", ntohl(th->th_seq));
+    printf("Ack Number      : %u\n", ntohl(th->th_ack));
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    printf("Sequence Number : %u\n", ntohl(th->th_seq));
+    printf("Ack Number      : %u\n", ntohl(th->th_ack));
+#else
+    printf("Sequence Number : %u\n", ntohl(th->seq));
+    printf("Ack Number      : %u\n", ntohl(th->ack_seq));
+#endif
 
+    // Flags print (portable)
     printf("Flags           : ");
-    if (flags & 0x01) printf("FIN ");
-    if (flags & 0x02) printf("SYN ");
-    if (flags & 0x04) printf("RST ");
-    if (flags & 0x08) printf("PSH ");
-    if (flags & 0x10) printf("ACK ");
-    if (flags & 0x20) printf("URG ");
+#ifdef __APPLE__
+    unsigned f = th->th_flags;
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    unsigned f = th->th_flags;
+#else
+    unsigned f = (th->fin?1:0) | (th->syn?2:0) | (th->rst?4:0) | (th->psh?8:0) |
+                 (th->ack?16:0) | (th->urg?32:0);
+#endif
+    if (f & 0x01) printf("FIN ");
+    if (f & 0x02) printf("SYN ");
+    if (f & 0x04) printf("RST ");
+    if (f & 0x08) printf("PSH ");
+    if (f & 0x10) printf("ACK ");
+    if (f & 0x20) printf("URG ");
     printf("\n");
 
-    // Basic service hint: check both src/dst ports
-    uint16_t svc = (dst_port < src_port ? dst_port : src_port);
+    // Basic service hint (check both ports)
+    uint16_t sp = tcp_sport(th), dp = tcp_dport(th);
+    uint16_t svc = (dp < sp ? dp : sp);
     printf("Service         : ");
     switch (svc) {
         case 80:  printf("HTTP\n"); break;
@@ -151,32 +220,40 @@ void parse_tcp(const struct pcap_pkthdr *header, const u_char *packet) {
 }
 
 // === Display UDP Header (IPv4) ===
-void parse_udp(const struct pcap_pkthdr *header, const u_char *packet) {
+static void parse_udp(const struct pcap_pkthdr *header, const u_char *packet) {
     if (g_verbose < 2) return;
     size_t l2; uint16_t et; if (parse_l2(header, packet, &l2, &et) < 0) return;
-    if (et != 0x0800) return;
+    if (et != ETHERTYPE_IP) return;
 
-    if (!ensure_len(header, l2 + 20)) { puts("(UDP) truncated (IP)"); return; }
-    const u_char *ip = packet + l2;
-    uint8_t ihl = (ip[0] & 0x0F) * 4;
-    if (ihl < 20) { puts("(UDP) invalid IHL"); return; }
-    if (!ensure_len(header, l2 + ihl + 8)) { puts("(UDP) truncated (L4)"); return; }
+    if (!ensure_len(header, l2 + sizeof(struct ip))) { puts("(UDP) truncated (IP)"); return; }
+    const struct ip *ip = (const struct ip *)(packet + l2);
+    uint8_t ihl = ip->ip_hl * 4;
+    if (ihl < sizeof(struct ip)) { puts("(UDP) invalid IHL)"); return; }
+    if (!ensure_len(header, l2 + ihl + sizeof(struct udphdr))) { puts("(UDP) truncated (L4)"); return; }
 
-    const u_char *udp = ip + ihl;
+    const struct udphdr *uh = (const struct udphdr *)((const u_char *)ip + ihl);
 
-    uint16_t src_port = rd16(udp + 0);
-    uint16_t dst_port = rd16(udp + 2);
-    uint16_t length   = rd16(udp + 4);
-    uint16_t checksum = rd16(udp + 6);
+    uint16_t sp = udp_sport(uh);
+    uint16_t dp = udp_dport(uh);
+#ifdef __APPLE__
+    uint16_t length   = ntohs(uh->uh_ulen);
+    uint16_t checksum = ntohs(uh->uh_sum);
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    uint16_t length   = ntohs(uh->uh_ulen);
+    uint16_t checksum = ntohs(uh->uh_sum);
+else
+    uint16_t length   = ntohs(uh->len);
+    uint16_t checksum = ntohs(uh->check);
+#endif
 
     printf("\n=== UDP Header ===\n");
-    printf("Source Port     : %u\n", src_port);
-    printf("Destination Port: %u\n", dst_port);
+    printf("Source Port     : %u\n", sp);
+    printf("Destination Port: %u\n", dp);
     printf("Length          : %u bytes\n", length);
     printf("Checksum        : 0x%04x\n", checksum);
 
     printf("Service         : ");
-    uint16_t svc = (dst_port < src_port ? dst_port : src_port);
+    uint16_t svc = (dp < sp ? dp : sp);
     switch (svc) {
         case 53:   printf("DNS\n"); break;
         case 67:
@@ -187,72 +264,70 @@ void parse_udp(const struct pcap_pkthdr *header, const u_char *packet) {
     }
 }
 
-// === Display DNS Packet (IPv4/UDP, heuristic) ===
-void parse_dns_packet(const struct pcap_pkthdr *header, const u_char *packet) {
+// === Display DNS Packet (kept minimal; now uses struct ip/udphdr for offsets) ===
+static void parse_dns_packet(const struct pcap_pkthdr *header, const u_char *packet) {
     if (g_verbose < 2) return;
-
     size_t l2; uint16_t et; if (parse_l2(header, packet, &l2, &et) < 0) return;
-    if (et != 0x0800) return;
+    if (et != ETHERTYPE_IP) return;
 
-    if (!ensure_len(header, l2 + 20)) return;
-    const u_char *ip = packet + l2;
-    uint8_t ihl = (ip[0] & 0x0F) * 4;
-    if (ihl < 20) return;
-    if (ip[9] != 0x11) return; // UDP
-    if (!ensure_len(header, l2 + ihl + 8)) return;
+    if (!ensure_len(header, l2 + sizeof(struct ip))) return;
+    const struct ip *ip = (const struct ip *)(packet + l2);
+    uint8_t ihl = ip->ip_hl * 4;
+    if (ihl < sizeof(struct ip)) return;
+    if (ip->ip_p != IPPROTO_UDP) return;
+    if (!ensure_len(header, l2 + ihl + sizeof(struct udphdr))) return;
 
-    const u_char *udp = ip + ihl;
-    uint16_t sp = rd16(udp + 0), dp = rd16(udp + 2);
+    const struct udphdr *uh = (const struct udphdr *)((const u_char *)ip + ihl);
+    uint16_t sp = udp_sport(uh), dp = udp_dport(uh);
     if (!(sp == 53 || dp == 53)) return;
 
-    const u_char *dns = udp + 8;
+    const u_char *dns = (const u_char *)uh + sizeof(struct udphdr);
     if (!ensure_len(header, (dns - packet) + 12)) { puts("(DNS) truncated"); return; }
 
-    uint16_t transaction_id = rd16(dns + 0);
-    uint16_t flags = rd16(dns + 2);
-    uint16_t questions = rd16(dns + 4);
+    uint16_t transaction_id = ntohs(*(const uint16_t *)(dns + 0));
+    uint16_t flags          = ntohs(*(const uint16_t *)(dns + 2));
+    uint16_t questions      = ntohs(*(const uint16_t *)(dns + 4));
 
     printf("\n=== DNS Packet ===\n");
     printf("Transaction ID   : 0x%04x\n", transaction_id);
     printf("Flags            : 0x%04x\n", flags);
     printf("Questions        : %u\n", questions);
 
-    // Minimal QNAME dump with bounds checks
+    // Minimal QNAME printer with guards
     printf("Query Domain     : ");
-    size_t idx = 12;
-    size_t dns_off = (dns - packet);
-    while (ensure_len(header, dns_off + idx + 1) && dns[idx] != 0) {
+    size_t idx = 12, base = (size_t)(dns - packet);
+    while (ensure_len(header, base + idx + 1) && dns[idx] != 0) {
         uint8_t len = dns[idx++];
-        if (len == 0 || len >= 63) break; // simple guard
-        if (!ensure_len(header, dns_off + idx + len)) break;
+        if (len == 0 || len >= 63) break;
+        if (!ensure_len(header, base + idx + len)) break;
         for (uint8_t i = 0; i < len; i++) putchar(dns[idx++]);
         if (dns[idx] != 0) putchar('.');
     }
     putchar('\n');
 }
 
-// === Display DHCP Packet (IPv4/UDP) ===
-void parse_dhcp_packet(const struct pcap_pkthdr *header, const u_char *packet) {
+// === Display DHCP Packet (still minimal; will be migrated to bootp.h later) ===
+static void parse_dhcp_packet(const struct pcap_pkthdr *header, const u_char *packet) {
     if (g_verbose < 2) return;
 
     size_t l2; uint16_t et; if (parse_l2(header, packet, &l2, &et) < 0) return;
-    if (et != 0x0800) return;
+    if (et != ETHERTYPE_IP) return;
 
-    if (!ensure_len(header, l2 + 20)) return;
-    const u_char *ip = packet + l2;
-    uint8_t ihl = (ip[0] & 0x0F) * 4;
-    if (ihl < 20) return;
-    if (ip[9] != 0x11) return; // UDP
-    if (!ensure_len(header, l2 + ihl + 8)) return;
+    if (!ensure_len(header, l2 + sizeof(struct ip))) return;
+    const struct ip *ip = (const struct ip *)(packet + l2);
+    uint8_t ihl = ip->ip_hl * 4;
+    if (ihl < sizeof(struct ip)) return;
+    if (ip->ip_p != IPPROTO_UDP) return;
+    if (!ensure_len(header, l2 + ihl + sizeof(struct udphdr))) return;
 
-    const u_char *udp = ip + ihl;
-    uint16_t sp = rd16(udp + 0), dp = rd16(udp + 2);
+    const struct udphdr *uh = (const struct udphdr *)((const u_char *)ip + ihl);
+    uint16_t sp = udp_sport(uh), dp = udp_dport(uh);
     if (!((sp == 67 || sp == 68) || (dp == 67 || dp == 68))) return;
 
-    const u_char *dhcp = udp + 8;
+    const u_char *dhcp = (const u_char *)uh + sizeof(struct udphdr);
     if (!ensure_len(header, (dhcp - packet) + 240)) { puts("(DHCP/BOOTP) truncated"); return; }
 
-    uint32_t xid = rd32(dhcp + 4);
+    uint32_t xid = ntohl(*(const uint32_t *)(dhcp + 4));
     const u_char *chaddr = dhcp + 28;
 
     printf("\n=== DHCP Packet ===\n");
@@ -262,8 +337,8 @@ void parse_dhcp_packet(const struct pcap_pkthdr *header, const u_char *packet) {
     printf("Your IP          : %u.%u.%u.%u\n", dhcp[16], dhcp[17], dhcp[18], dhcp[19]);
 }
 
-// === Display Raw Packet in Hex ===
-void print_raw_hex(const u_char *packet, size_t len) {
+// === Raw hex (unchanged) ===
+static void print_raw_hex(const u_char *packet, size_t len) {
     if (g_verbose >= 3) {
         printf("\n=== Raw Hex Dump ===\n");
         for (size_t i = 0; i < len; i++) {
@@ -274,136 +349,114 @@ void print_raw_hex(const u_char *packet, size_t len) {
     }
 }
 
-// === Very brief summary for v=1 (with dynamic offsets) ===
-void print_summary(const struct pcap_pkthdr *header, const u_char *packet) {
+// === Very brief summary for v=1 (now using std headers) ===
+static void print_summary(const struct pcap_pkthdr *header, const u_char *packet) {
     if (g_verbose != 1) return;
 
     size_t l2; uint16_t et;
     if (parse_l2(header, packet, &l2, &et) < 0) { printf("[TRUNC] caplen=%u\n", header->caplen); return; }
 
-    if (et == 0x0806) { // ARP
+    if (et == ETHERTYPE_ARP) {
         if (!ensure_len(header, l2 + 28)) { printf("[ARP] caplen=%u (trunc)\n", header->caplen); return; }
-        printf("[ARP] len=%u  %d.%d.%d.%d -> %d.%d.%d.%d\n",
+        printf("[ARP] len=%u  %u.%u.%u.%u -> %u.%u.%u.%u\n",
                header->len,
                packet[l2+14], packet[l2+15], packet[l2+16], packet[l2+17],
                packet[l2+24], packet[l2+25], packet[l2+26], packet[l2+27]);
         return;
     }
 
-    if (et == 0x0800) { // IPv4
-        if (!ensure_len(header, l2 + 20)) { printf("[IPv4] caplen=%u (trunc)\n", header->caplen); return; }
-        const u_char *ip = packet + l2;
-        uint8_t ihl = (ip[0] & 0x0F) * 4;
-        if (ihl < 20) { printf("[IPv4] invalid IHL\n"); return; }
+    if (et == ETHERTYPE_IP) {
+        if (!ensure_len(header, l2 + sizeof(struct ip))) { printf("[IPv4] caplen=%u (trunc)\n", header->caplen); return; }
+        const struct ip *ip = (const struct ip *)(packet + l2);
+        uint8_t ihl = ip->ip_hl * 4;
+        if (ihl < sizeof(struct ip)) { printf("[IPv4] invalid IHL\n"); return; }
         if (!ensure_len(header, l2 + ihl)) { printf("[IPv4] caplen=%u (trunc ihl)\n", header->caplen); return; }
-        uint8_t proto = ip[9];
 
-        const u_char *sip = ip + 12;
-        const u_char *dip = ip + 16;
+        char src[INET_ADDRSTRLEN], dst[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &ip->ip_src, src, sizeof src);
+        inet_ntop(AF_INET, &ip->ip_dst, dst, sizeof dst);
 
-        if (proto == 0x06) { // TCP
-            if (!ensure_len(header, l2 + ihl + 4)) { printf("[IPv4/TCP] caplen=%u (trunc)\n", header->caplen); return; }
-            const u_char *tcp = ip + ihl;
-            uint16_t sport = rd16(tcp + 0);
-            uint16_t dport = rd16(tcp + 2);
-            printf("[IPv4/TCP] len=%u  %d.%d.%d.%d:%u -> %d.%d.%d.%d:%u\n",
-                   header->len,
-                   sip[0],sip[1],sip[2],sip[3], sport,
-                   dip[0],dip[1],dip[2],dip[3], dport);
-        } else if (proto == 0x11) { // UDP
-            if (!ensure_len(header, l2 + ihl + 4)) { printf("[IPv4/UDP] caplen=%u (trunc)\n", header->caplen); return; }
-            const u_char *udp = ip + ihl;
-            uint16_t sport = rd16(udp + 0);
-            uint16_t dport = rd16(udp + 2);
-            printf("[IPv4/UDP] len=%u  %d.%d.%d.%d:%u -> %d.%d.%d.%d:%u\n",
-                   header->len,
-                   sip[0],sip[1],sip[2],sip[3], sport,
-                   dip[0],dip[1],dip[2],dip[3], dport);
-        } else if (proto == 0x01) { // ICMP
-            printf("[IPv4/ICMP] len=%u  %d.%d.%d.%d -> %d.%d.%d.%d\n",
-                   header->len,
-                   sip[0],sip[1],sip[2],sip[3],
-                   dip[0],dip[1],dip[2],dip[3]);
+        if (ip->ip_p == IPPROTO_TCP) {
+            if (!ensure_len(header, l2 + ihl + sizeof(struct tcphdr))) { printf("[IPv4/TCP] caplen=%u (trunc)\n", header->caplen); return; }
+            const struct tcphdr *th = (const struct tcphdr *)((const u_char *)ip + ihl);
+            printf("[IPv4/TCP] len=%u  %s:%u -> %s:%u\n",
+                   header->len, src, tcp_sport(th), dst, tcp_dport(th));
+        } else if (ip->ip_p == IPPROTO_UDP) {
+            if (!ensure_len(header, l2 + ihl + sizeof(struct udphdr))) { printf("[IPv4/UDP] caplen=%u (trunc)\n", header->caplen); return; }
+            const struct udphdr *uh = (const struct udphdr *)((const u_char *)ip + ihl);
+            printf("[IPv4/UDP] len=%u  %s:%u -> %s:%u\n",
+                   header->len, src, udp_sport(uh), dst, udp_dport(uh));
+        } else if (ip->ip_p == IPPROTO_ICMP) {
+            printf("[IPv4/ICMP] len=%u  %s -> %s\n", header->len, src, dst);
         } else {
-            printf("[IPv4/0x%02x] len=%u  %d.%d.%d.%d -> %d.%d.%d.%d\n",
-                   proto, header->len,
-                   sip[0],sip[1],sip[2],sip[3],
-                   dip[0],dip[1],dip[2],dip[3]);
+            printf("[IPv4/0x%02x] len=%u  %s -> %s\n", ip->ip_p, header->len, src, dst);
         }
         return;
     }
 
-    // (IPv6 not handled yet)
+    // (IPv6 still pending for next step)
     printf("[EtherType 0x%04x] len=%u\n", et, header->len);
 }
 
 // === Callback: Main Packet Parser ===
-void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
+static void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
 
     if (g_verbose == 1) {
         print_summary(header, packet);
-        // no hex in v=1 (avoid confusing no-op)
         return;
     }
 
     size_t l2; uint16_t et;
     if (parse_l2(header, packet, &l2, &et) < 0) return;
 
-    // v>=2: simple hierarchy display
     printf("Packet captured!\n");
     printf(" -> Length: %u bytes (caplen=%u)\n\n", header->len, header->caplen);
 
-    // Ethernet Header
+    // Ethernet Header (std struct)
+    const struct ether_header *eth = (const struct ether_header *)packet;
     printf("=== Ethernet Header ===\n");
-    print_mac("Destination MAC : ", packet);
-    print_mac("Source MAC      : ", packet + 6);
+    print_mac("Destination MAC : ", eth->ether_dhost);
+    print_mac("Source MAC      : ", eth->ether_shost);
     if (g_verbose >= 2) printf("EtherType       : 0x%04x\n", et);
 
-    // ARP
-    if (et == 0x0806) {
+    if (et == ETHERTYPE_ARP) {
         parse_arp(header, packet);
-    }
-    // IPv4
-    else if (et == 0x0800) {
-        if (!ensure_len(header, l2 + 20)) { puts("(IPv4) truncated"); return; }
-
-        const u_char *ip = packet + l2;
-        uint8_t ihl = (ip[0] & 0x0F) * 4;
-        if (ihl < 20) { puts("(IPv4) invalid IHL"); return; }
+    } else if (et == ETHERTYPE_IP) {
+        if (!ensure_len(header, l2 + sizeof(struct ip))) { puts("(IPv4) truncated"); return; }
+        const struct ip *ip = (const struct ip *)(packet + l2);
+        uint8_t ihl = ip->ip_hl * 4;
+        if (ihl < sizeof(struct ip)) { puts("(IPv4) invalid IHL"); return; }
         if (!ensure_len(header, l2 + ihl)) { puts("(IPv4) truncated (ihl)"); return; }
 
         printf("\n=== IP Header (IPv4) ===\n");
-        print_ip("Source IP       : ", ip + 12);
-        print_ip("Destination IP  : ", ip + 16);
+        print_ipv4("Source IP       : ", &ip->ip_src);
+        print_ipv4("Destination IP  : ", &ip->ip_dst);
+        printf("Protocol        : 0x%02x ", ip->ip_p);
 
-        uint8_t protocol = ip[9];
-        printf("Protocol        : 0x%02x ", protocol);
-
-        switch (protocol) {
-            case 0x01:
+        switch (ip->ip_p) {
+            case IPPROTO_ICMP:
                 printf("(ICMP)\n");
                 parse_icmp(header, packet);
                 break;
-            case 0x06:
+            case IPPROTO_TCP:
                 printf("(TCP)\n");
                 parse_tcp(header, packet);
                 break;
-            case 0x11:
+            case IPPROTO_UDP: {
                 printf("(UDP)\n");
                 parse_udp(header, packet);
 
-                // UDP -> detect higher-level protocols
-                if (!ensure_len(header, l2 + ihl + 8)) break;
-                {
-                    const u_char *udp = ip + ihl;
-                    uint16_t src_port = rd16(udp + 0);
-                    uint16_t dst_port = rd16(udp + 2);
-                    if (src_port == 53 || dst_port == 53)
-                        parse_dns_packet(header, packet);
-                    else if ((src_port == 67 || dst_port == 67) || (src_port == 68 || dst_port == 68))
-                        parse_dhcp_packet(header, packet);
-                }
+                // UDP → detect higher-level protocols
+                if (!ensure_len(header, l2 + ihl + sizeof(struct udphdr))) break;
+                const struct udphdr *uh = (const struct udphdr *)((const u_char *)ip + ihl);
+                uint16_t src_port = udp_sport(uh);
+                uint16_t dst_port = udp_dport(uh);
+                if (src_port == 53 || dst_port == 53)
+                    parse_dns_packet(header, packet);
+                else if ((src_port == 67 || dst_port == 67) || (src_port == 68 || dst_port == 68))
+                    parse_dhcp_packet(header, packet);
                 break;
+            }
             default:
                 printf("(Unknown)\n");
         }
@@ -411,8 +464,7 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
         printf("Unknown/Unhandled EtherType, parsing skipped.\n");
     }
 
-    // Hex dump only in v=3
-    print_raw_hex(packet, header->caplen);
+    print_raw_hex(packet, header->caplen); // only prints in v>=3
 }
 
 // === Usage ===
@@ -438,8 +490,6 @@ static int apply_filter(pcap_t *handle, const char *iface_or_null, const char *b
             fprintf(stderr, "pcap_lookupnet failed on %s: %s (using 0.0.0.0/0)\n", iface_or_null, errbuf);
             net = 0; mask = 0;
         }
-    } else {
-        net = 0; mask = 0;
     }
 
     if (pcap_compile(handle, &fp, bpf, 1 /*optimize*/, mask) == -1) {
@@ -464,7 +514,6 @@ int main(int argc, char *argv[]) {
     char *bpf = NULL;
     int opt;
 
-    // Parse CLI
     while ((opt = getopt(argc, argv, "i:o:f:v:")) != -1) {
         switch (opt) {
             case 'i': iface = optarg; break;
@@ -484,7 +533,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Validate mode: exactly one of -i or -o
     if ((iface && pcapfile) || (!iface && !pcapfile)) {
         fprintf(stderr, "Error: specify exactly one of -i <iface> or -o <pcapfile>.\n");
         usage(argv[0]);
@@ -492,24 +540,13 @@ int main(int argc, char *argv[]) {
     }
 
     if (iface) {
-        // Open live capture (snaplen 65535 to avoid payload truncation)
         handle = pcap_open_live(iface, 65535, 1 /*promisc*/, 1000 /*timeout ms*/, errbuf);
-        if (handle == NULL) {
-            fprintf(stderr, "Error opening device %s: %s\n", iface, errbuf);
-            return 1;
-        }
-
-        // Reject non-Ethernet link-layers early
+        if (!handle) { fprintf(stderr, "Error opening device %s: %s\n", iface, errbuf); return 1; }
         if (pcap_datalink(handle) != DLT_EN10MB) {
             fprintf(stderr, "Unsupported link-layer (expecting Ethernet).\n");
-            pcap_close(handle);
-            return 1;
+            pcap_close(handle); return 1;
         }
-
-        if (apply_filter(handle, iface, bpf) == -1) {
-            pcap_close(handle);
-            return 1;
-        }
+        if (apply_filter(handle, iface, bpf) == -1) { pcap_close(handle); return 1; }
 
         printf("Live capture on %s (verbosity=%d)%s\n",
                iface, g_verbose, bpf ? " with filter" : "");
@@ -519,24 +556,13 @@ int main(int argc, char *argv[]) {
         if (rc == -1) fprintf(stderr, "pcap_loop error: %s\n", pcap_geterr(handle));
         pcap_close(handle);
     } else {
-        // Offline mode
         handle = pcap_open_offline(pcapfile, errbuf);
-        if (handle == NULL) {
-            fprintf(stderr, "Error opening pcap file %s: %s\n", pcapfile, errbuf);
-            return 1;
-        }
-
-        // Reject non-Ethernet link-layers early
+        if (!handle) { fprintf(stderr, "Error opening pcap file %s: %s\n", pcapfile, errbuf); return 1; }
         if (pcap_datalink(handle) != DLT_EN10MB) {
             fprintf(stderr, "Unsupported link-layer (expecting Ethernet).\n");
-            pcap_close(handle);
-            return 1;
+            pcap_close(handle); return 1;
         }
-
-        if (apply_filter(handle, NULL, bpf) == -1) {
-            pcap_close(handle);
-            return 1;
-        }
+        if (apply_filter(handle, NULL, bpf) == -1) { pcap_close(handle); return 1; }
 
         printf("Offline read from %s (verbosity=%d)%s\n",
                pcapfile, g_verbose, bpf ? " with filter" : "");
@@ -546,6 +572,5 @@ int main(int argc, char *argv[]) {
         if (rc == -1) fprintf(stderr, "pcap_loop error: %s\n", pcap_geterr(handle));
         pcap_close(handle);
     }
-
     return 0;
 }
