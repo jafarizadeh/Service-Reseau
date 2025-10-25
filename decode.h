@@ -30,4 +30,9 @@ void try_http(const unsigned char *p, int len);
 void hexdump(const unsigned char *p, int len, int max_bytes);
 void print_summary_line(const struct pcap_pkthdr *h, const unsigned char *p);
 
+/* IPv6 + ICMPv6 */
+void handle_ipv6(const struct pcap_pkthdr *h, const unsigned char *p, int ip6_off);
+void handle_icmp6(const struct pcap_pkthdr *h, const unsigned char *p, int off);
+
+
 #endif /* DECODE_H */

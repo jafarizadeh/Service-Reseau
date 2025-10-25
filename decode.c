@@ -8,10 +8,9 @@
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
 #include <netinet/ip_icmp.h>
+#include <netinet/ip6.h>
+#include <netinet/icmp6.h>
 
-#include <netinet/ip_icmp.h>
-#include <netinet/udp.h>
-#include <netinet/tcp.h>
 
 
 /* compat for macOS/BSD vs Linux */
@@ -88,7 +87,7 @@ void print_mac(const unsigned char *m) {
            m[0], m[1], m[2], m[3], m[4], m[5]);
 }
 
-/* IPv4 basic details and dispatch to L4 */
+/* IPv4 and dispatch to L4 */
 void handle_ipv4(const struct pcap_pkthdr *h, const unsigned char *p, int ip_off) {
     if ((int)h->caplen < ip_off + (int)sizeof(struct ip)) return;
     const struct ip *ip = (const struct ip *)(p + ip_off);
@@ -112,7 +111,7 @@ void handle_ipv4(const struct pcap_pkthdr *h, const unsigned char *p, int ip_off
     else if (ip->ip_p == IPPROTO_ICMP) handle_icmp(h, p, l4off);
 }
 
-/* ARP minimal */
+/* ARP */
 void handle_arp(const struct pcap_pkthdr *h, const unsigned char *p, int off) {
     (void)h;
     const unsigned char *a = p + off;
@@ -124,14 +123,14 @@ void handle_arp(const struct pcap_pkthdr *h, const unsigned char *p, int off) {
     printf("  Target IP : %u.%u.%u.%u\n", a[24],a[25],a[26],a[27]);
 }
 
-/* ICMPv4 minimal */
+/* ICMPv4 */
 void handle_icmp(const struct pcap_pkthdr *h, const unsigned char *p, int off) {
     if ((int)h->caplen < off + (int)sizeof(ICMPHDR)) return;
     const ICMPHDR *ic = (const ICMPHDR*)(p + off);
     printf("ICMP: type=%d code=%d\n", ICMP_TYPE(ic), ICMP_CODE(ic));
 }
 
-/* UDP + simple app guesses */
+/* UDP + app guesses */
 void handle_udp(const struct pcap_pkthdr *h, const unsigned char *p, int off) {
     if ((int)h->caplen < off + (int)sizeof(struct udphdr)) return;
     const struct udphdr *uh = (const struct udphdr*)(p + off);
@@ -145,7 +144,7 @@ void handle_udp(const struct pcap_pkthdr *h, const unsigned char *p, int off) {
     if (dp == 67 || dp == 68 || sp == 67 || sp == 68) try_dhcp(pl, plen);
 }
 
-/* TCP + simple HTTP peek */
+/* TCP +   HTTP peek */
 void handle_tcp(const struct pcap_pkthdr *h, const unsigned char *p, int off) {
     if ((int)h->caplen < off + (int)sizeof(struct tcphdr)) return;
 const struct tcphdr *th = (const struct tcphdr*)(p + off);
@@ -168,21 +167,21 @@ int doff = TCP_DOFF(th);
     if (dp == 80 || sp == 80) try_http(pl, plen);
 }
 
-/* DNS very basic: only prints that it's DNS and shows a few bytes */
+/* DNS : prints that it's DNS and shows a few bytes */
 void try_dns(const unsigned char *p, int len) {
     if (len <= 0) return;
     printf("  DNS (basic) - %d bytes\n", len);
     if (g_verbose == 3) hexdump(p, len, 64);
 }
 
-/* DHCP very basic: only indicates presence */
+/* DHCP : indicates presence */
 void try_dhcp(const unsigned char *p, int len) {
     if (len <= 0) return;
     printf("  DHCP/BOOTP (basic) - %d bytes\n", len);
     if (g_verbose == 3) hexdump(p, len, 64);
 }
 
-/* HTTP very basic: print first line (until \\r or \\n) */
+/* HTTP : first line (until \\r or \\n) */
 void try_http(const unsigned char *p, int len) {
     if (len <= 0) return;
     int n = 0;
@@ -196,13 +195,13 @@ void try_http(const unsigned char *p, int len) {
     putchar('\n');
 }
 
-/* Summary (v=1): keep it very basic */
+/* Summary (v=1): keep it   */
 void print_summary_line(const struct pcap_pkthdr *h, const unsigned char *p) {
     (void)p;
     printf("%ld.%06ld len=%u\n", (long)h->ts.tv_sec, (long)h->ts.tv_usec, h->len);
 }
 
-/* Simple hex dump */
+/*   hex dump */
 void hexdump(const unsigned char *p, int len, int max_bytes) {
     if (len > max_bytes) len = max_bytes;
     for (int i = 0; i < len; i++) {
@@ -211,4 +210,82 @@ void hexdump(const unsigned char *p, int len, int max_bytes) {
         if (i % 16 == 15) printf("\n");
     }
     if (len % 16 != 0) printf("\n");
+}
+
+/* IPv6: read fixed header and dispatch to TCP/UDP/ICMPv6 */
+void handle_ipv6(const struct pcap_pkthdr *h, const unsigned char *p, int ip6_off) {
+    if ((int)h->caplen < ip6_off + (int)sizeof(struct ip6_hdr)) return;
+
+    const struct ip6_hdr *ip6 = (const struct ip6_hdr *)(p + ip6_off);
+    char src6[64] = {0}, dst6[64] = {0};
+    inet_ntop(AF_INET6, &ip6->ip6_src, src6, sizeof(src6));
+    inet_ntop(AF_INET6, &ip6->ip6_dst, dst6, sizeof(dst6));
+
+    if (g_verbose >= 2) {
+        printf("IPv6: %s -> %s nh=%d hlim=%d plen=%d\n",
+               src6, dst6,
+               (int)ip6->ip6_nxt,
+               (int)ip6->ip6_hlim,
+               (int)ntohs(ip6->ip6_plen));
+    } else {
+        printf("IPv6: %s -> %s\n", src6, dst6);
+    }
+
+    /* IPv6 header is 40 bytes */
+    int l4off = ip6_off + 40;
+    int nh = ip6->ip6_nxt;
+
+    /* ignore extension headers for now */
+    if (nh == IPPROTO_TCP) {
+        handle_tcp(h, p, l4off);
+    } else if (nh == IPPROTO_UDP) {
+        handle_udp(h, p, l4off);
+    } else if (nh == IPPROTO_ICMPV6) {
+        handle_icmp6(h, p, l4off);
+    } else {
+        if (g_verbose >= 2) printf("Unknown IPv6 next header: %d\n", nh);
+    }
+}
+
+/* ICMPv6: type/code, echo, and brief ND info */
+void handle_icmp6(const struct pcap_pkthdr *h, const unsigned char *p, int off) {
+    if ((int)h->caplen < off + (int)sizeof(struct icmp6_hdr)) return;
+
+    const struct icmp6_hdr *ic6 = (const struct icmp6_hdr *)(p + off);
+    unsigned char t = ic6->icmp6_type;
+    unsigned char c = ic6->icmp6_code;
+
+    printf("ICMPv6: type=%u code=%u", (unsigned)t, (unsigned)c);
+
+    /* Echo request/reply (128/129) */
+    if (t == 128 || t == 129) {
+        printf(" (echo)");
+    }
+
+    /* Neighbor Solicitation (135) */
+    if (t == ND_NEIGHBOR_SOLICIT) {
+        if ((int)h->caplen >= off + (int)sizeof(struct nd_neighbor_solicit)) {
+            const struct nd_neighbor_solicit *ns = (const struct nd_neighbor_solicit *)(p + off);
+            char tgt[64] = {0};
+            inet_ntop(AF_INET6, &ns->nd_ns_target, tgt, sizeof(tgt));
+            printf(" (ns target=%s)", tgt);
+        }
+    }
+    /* Neighbor Advertisement (136) */
+    else if (t == ND_NEIGHBOR_ADVERT) {
+        if ((int)h->caplen >= off + (int)sizeof(struct nd_neighbor_advert)) {
+            const struct nd_neighbor_advert *na = (const struct nd_neighbor_advert *)(p + off);
+            char tgt[64] = {0};
+            inet_ntop(AF_INET6, &na->nd_na_target, tgt, sizeof(tgt));
+            printf(" (na target=%s)", tgt);
+        }
+    }
+
+    printf("\n");
+
+    if (g_verbose == 3) {
+        const unsigned char *pl = p + off + (int)sizeof(struct icmp6_hdr);
+        int plen = (int)h->caplen - (int)(pl - p);
+        if (plen > 0) hexdump(pl, plen, 64);
+    }
 }
