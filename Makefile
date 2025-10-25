@@ -1,15 +1,18 @@
-# Makefile
-CC = gcc
-CFLAGS = -Wall -O2
-LDFLAGS = -lpcap
+CC=gcc
+CFLAGS=-std=c11 -Wall -Wextra -O2
+LDFLAGS=-lpcap
 
-SRC = tp1.c
-TARGET = tp1
+OBJS=main.o decode.o util.o
 
-all: $(TARGET)
+all: analyseur
 
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(LDFLAGS)
+analyseur: $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(OBJS) analyseur
+
+.PHONY: all clean
