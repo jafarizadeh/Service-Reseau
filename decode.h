@@ -34,5 +34,8 @@ void print_summary_line(const struct pcap_pkthdr *h, const unsigned char *p);
 void handle_ipv6(const struct pcap_pkthdr *h, const unsigned char *p, int ip6_off);
 void handle_icmp6(const struct pcap_pkthdr *h, const unsigned char *p, int off);
 
+/* FTP/SMTP */
+void try_ftp(const unsigned char *p, int len);
+void try_smtp(const unsigned char *p, int len);
 
 #endif /* DECODE_H */
