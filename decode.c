@@ -113,15 +113,45 @@ void handle_ipv4(const struct pcap_pkthdr *h, const unsigned char *p, int ip_off
 
 /* ARP */
 void handle_arp(const struct pcap_pkthdr *h, const unsigned char *p, int off) {
-    (void)h;
+    if ((int)h->caplen < off + 8) return;
+
     const unsigned char *a = p + off;
-    if ((int)h->caplen < off + 28) return; /* assume Ethernet/IPv4 */
-    printf("ARP (basic)\n");
-    printf("  Sender MAC: "); print_mac(a+8); printf("\n");
-    printf("  Sender IP : %u.%u.%u.%u\n", a[14],a[15],a[16],a[17]);
-    printf("  Target MAC: "); print_mac(a+18); printf("\n");
-    printf("  Target IP : %u.%u.%u.%u\n", a[24],a[25],a[26],a[27]);
+    unsigned short htype = (unsigned short)((a[0] << 8) | a[1]);
+    unsigned short ptype = (unsigned short)((a[2] << 8) | a[3]);
+    unsigned char  hlen  = a[4];
+    unsigned char  plen  = a[5];
+    unsigned short oper  = (unsigned short)((a[6] << 8) | a[7]);
+
+    int need = 8 + hlen + plen + hlen + plen;
+    if ((int)h->caplen < off + need) return;
+
+    const unsigned char *sha = a + 8;
+    const unsigned char *spa = sha + hlen;
+    const unsigned char *tha = spa + plen;
+    const unsigned char *tpa = tha + hlen;
+
+    if (g_verbose >= 2) {
+        printf("ARP: htype=%u ptype=0x%04x hlen=%u plen=%u op=%u\n",
+               (unsigned)htype, (unsigned)ptype, (unsigned)hlen, (unsigned)plen, (unsigned)oper);
+    } else {
+        printf("ARP\n");
+    }
+
+    printf("  Sender MAC: "); print_mac(sha); printf("\n");
+    if (plen == 4) {
+        printf("  Sender IP : %u.%u.%u.%u\n", spa[0], spa[1], spa[2], spa[3]);
+    } else {
+        printf("  Sender Proto: (%u bytes)\n", (unsigned)plen);
+    }
+
+    printf("  Target MAC: "); print_mac(tha); printf("\n");
+    if (plen == 4) {
+        printf("  Target IP : %u.%u.%u.%u\n", tpa[0], tpa[1], tpa[2], tpa[3]);
+    } else {
+        printf("  Target Proto: (%u bytes)\n", (unsigned)plen);
+    }
 }
+
 
 /* ICMPv4 */
 void handle_icmp(const struct pcap_pkthdr *h, const unsigned char *p, int off) {
@@ -144,7 +174,7 @@ void handle_udp(const struct pcap_pkthdr *h, const unsigned char *p, int off) {
     if (dp == 67 || dp == 68 || sp == 67 || sp == 68) try_dhcp(pl, plen);
 }
 
-/* TCP +   HTTP peek */
+/* TCP + HTTP peek */
 void handle_tcp(const struct pcap_pkthdr *h, const unsigned char *p, int off) {
     if ((int)h->caplen < off + (int)sizeof(struct tcphdr)) return;
 const struct tcphdr *th = (const struct tcphdr*)(p + off);
