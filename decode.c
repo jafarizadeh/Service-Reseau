@@ -56,6 +56,24 @@
 #define TCP_DOFF(t) ((t)->doff * 4)
 #endif
 
+/* extra compat for Linux/BSD field names (seq/ack/window/checksum/urg, UDP checksum) */
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+  #define TCP_SEQ(t)   ntohl((t)->th_seq)
+  #define TCP_ACKN(t)  ntohl((t)->th_ack)
+  #define TCP_WIN(t)   ntohs((t)->th_win)
+  #define TCP_SUM(t)   ntohs((t)->th_sum)
+  #define TCP_URP(t)   ntohs((t)->th_urp)
+  #define UDP_SUM(u)   ntohs((u)->uh_sum)
+#else
+  #define TCP_SEQ(t)   ntohl((t)->seq)
+  #define TCP_ACKN(t)  ntohl((t)->ack_seq)
+  #define TCP_WIN(t)   ntohs((t)->window)
+  #define TCP_SUM(t)   ntohs((t)->check)
+  #define TCP_URP(t)   ntohs((t)->urg_ptr)
+  #define UDP_SUM(u)   ntohs((u)->check)
+#endif
+
+
 int parse_ethernet(const struct pcap_pkthdr *h, const unsigned char *p, int *eth_type, int *l2len)
 {
     if ((int)h->caplen < 14)
@@ -71,6 +89,13 @@ int parse_ethernet(const struct pcap_pkthdr *h, const unsigned char *p, int *eth
     { // VLAN
         et = (unsigned short)(d[16] << 8 | d[17]);
         off = 18;
+    }
+    if (g_verbose == 3 && (unsigned short)(d[12] << 8 | d[13]) == 0x8100 && (int)h->caplen >= 18) {
+    unsigned short tci = (unsigned short)((d[14] << 8) | d[15]);
+    unsigned int pcp = (tci >> 13) & 0x7;
+    unsigned int dei = (tci >> 12) & 0x1;
+    unsigned int vid = tci & 0x0FFF;
+    printf("  802.1Q: PCP=%u DEI=%u VID=%u\n", pcp, dei, vid);
     }
     if (g_verbose >= 2)
         printf(" type=0x%04x\n", et);
@@ -225,7 +250,11 @@ void handle_udp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
     const struct udphdr *uh = (const struct udphdr *)(p + off);
     unsigned short sp = UDP_SPORT(uh), dp = UDP_DPORT(uh);
     unsigned short ulen = UDP_LEN(uh);
-    if (g_verbose >= 2)
+    if (g_verbose == 3) {
+    printf("UDP:\n");
+    printf("  src-port=%u dst-port=%u length=%u checksum=0x%04x\n",
+           sp, dp, ulen, UDP_SUM(uh));
+    } else if (g_verbose >= 2)
         printf("UDP: %u -> %u len=%u\n", sp, dp, ulen);
 
     const unsigned char *pl = p + off + sizeof(struct udphdr);
@@ -241,37 +270,45 @@ void handle_tcp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
 {
     if ((int)h->caplen < off + (int)sizeof(struct tcphdr))
         return;
+
     const struct tcphdr *th = (const struct tcphdr *)(p + off);
     unsigned short sp = TCP_SPORT(th), dp = TCP_DPORT(th);
     int doff = TCP_DOFF(th);
+
     if ((int)h->caplen < off + doff)
         return;
-    if (g_verbose >= 2)
-    {
+
+    if (g_verbose == 3) {
+        unsigned int opts = (doff > 20) ? (doff - 20) : 0;
+        printf("TCP:\n");
+        printf("  src-port=%u dst-port=%u\n", sp, dp);
+        printf("  seq=%u ack=%u hdr-len=%d\n", TCP_SEQ(th), TCP_ACKN(th), doff);
+        printf("  flags%s%s%s%s%s%s\n",
+               TCP_FLAG_SYN(th) ? " SYN" : "",
+               TCP_FLAG_ACK(th) ? " ACK" : "",
+               TCP_FLAG_FIN(th) ? " FIN" : "",
+               TCP_FLAG_RST(th) ? " RST" : "",
+               TCP_FLAG_PSH(th) ? " PSH" : "",
+               TCP_FLAG_URG(th) ? " URG" : "");
+        printf("  window=%u checksum=0x%04x urgptr=%u\n",
+               TCP_WIN(th), TCP_SUM(th), TCP_URP(th));
+        if (opts) printf("  options-bytes=%u\n", opts);
+    } else if (g_verbose >= 2) {
         printf("TCP: %u -> %u", sp, dp);
-        if (TCP_FLAG_SYN(th))
-            printf(" SYN");
-        if (TCP_FLAG_ACK(th))
-            printf(" ACK");
-        if (TCP_FLAG_FIN(th))
-            printf(" FIN");
-        if (TCP_FLAG_RST(th))
-            printf(" RST");
-        if (TCP_FLAG_PSH(th))
-            printf(" PSH");
-        if (TCP_FLAG_URG(th))
-            printf(" URG");
+        if (TCP_FLAG_SYN(th)) printf(" SYN");
+        if (TCP_FLAG_ACK(th)) printf(" ACK");
+        if (TCP_FLAG_FIN(th)) printf(" FIN");
+        if (TCP_FLAG_RST(th)) printf(" RST");
+        if (TCP_FLAG_PSH(th)) printf(" PSH");
+        if (TCP_FLAG_URG(th)) printf(" URG");
         printf("\n");
     }
 
     const unsigned char *pl = p + off + doff;
     int plen = (int)h->caplen - (int)(pl - p);
-    if (dp == 80 || sp == 80)
-        try_http(pl, plen);
-    if (dp == 21 || sp == 21)
-        try_ftp(pl, plen);
-    if (dp == 25 || sp == 25)
-        try_smtp(pl, plen);
+    if (dp == 80 || sp == 80) try_http(pl, plen);
+    if (dp == 21 || sp == 21) try_ftp(pl, plen);
+    if (dp == 25 || sp == 25) try_smtp(pl, plen);
 }
 
 /* --- DNS helpers --- */
@@ -433,12 +470,12 @@ void try_dns(const unsigned char *p, int len)
 /* DHCP/BOOTP decode: header + DHCP options (53/50/51/54) */
 void try_dhcp(const unsigned char *p, int len)
 {
-    if (len < (int)sizeof(struct bootp))
-    {
+    if (len < (int)sizeof(struct bootp)) {
         printf("  DHCP/BOOTP (truncated)\n");
         return;
     }
 
+    /* define bp first, then use it everywhere */
     const struct bootp *bp = (const struct bootp *)p;
 
     /* header prints */
@@ -451,25 +488,32 @@ void try_dhcp(const unsigned char *p, int len)
     inet_ntop(AF_INET, &bp->bp_yiaddr, yi, sizeof(yi));
     printf("    yiaddr=%s\n", yi);
 
-    if (bp->bp_hlen == 6)
-    {
+    if (bp->bp_hlen == 6) {
         printf("    chaddr=");
-        for (int i = 0; i < 6; i++)
-        {
+        for (int i = 0; i < 6; i++) {
             printf("%s%02x", (i ? ":" : ""), bp->bp_chaddr[i]);
         }
         printf("\n");
     }
 
+    /* v=3: print extra header fields (secs/flags + ci/si/gi) */
+    if (g_verbose == 3) {
+        char ci[32]={0}, si[32]={0}, gi[32]={0};
+        inet_ntop(AF_INET, &bp->bp_ciaddr, ci, sizeof(ci));
+        inet_ntop(AF_INET, &bp->bp_siaddr, si, sizeof(si));
+        inet_ntop(AF_INET, &bp->bp_giaddr, gi, sizeof(gi));
+        printf("    secs=%u flags=0x%04x\n",
+               (unsigned)ntohs(bp->bp_secs), (unsigned)ntohs(bp->bp_flags));
+        printf("    ciaddr=%s siaddr=%s giaddr=%s\n", ci, si, gi);
+    }
+
     /* locate DHCP magic cookie (99 130 83 99) right after fixed header (236..239) */
     int opt_off = 236; /* BOOTP fixed header size */
-    if (len < opt_off + 4)
-    {
+    if (len < opt_off + 4) {
         printf("    (no DHCP magic cookie)\n");
         return;
     }
-    if (p[opt_off] != 0x63 || p[opt_off + 1] != 0x82 || p[opt_off + 2] != 0x53 || p[opt_off + 3] != 0x63)
-    {
+    if (p[opt_off] != 0x63 || p[opt_off+1] != 0x82 || p[opt_off+2] != 0x53 || p[opt_off+3] != 0x63) {
         printf("    (no DHCP magic cookie)\n");
         return;
     }
@@ -477,70 +521,48 @@ void try_dhcp(const unsigned char *p, int len)
 
     int seen_msg = 0, seen_reqip = 0, seen_lease = 0, seen_svr = 0;
 
-    while (o < len)
-    {
+    while (o < len) {
         uint8_t tag = p[o++];
-        if (tag == DHCP_OPT_END)
-            break;
-        if (tag == DHCP_OPT_PAD)
-            continue;
-        if (o >= len)
-            break;
+        if (tag == DHCP_OPT_END) break;
+        if (tag == DHCP_OPT_PAD) continue;
+        if (o >= len) break;
 
         uint8_t olen = p[o++];
-        if (o + olen > len)
-            break;
+        if (o + olen > len) break;
 
-        if (tag == DHCP_OPT_MSG_TYPE && olen == 1)
-        {
+        if (tag == DHCP_OPT_MSG_TYPE && olen == 1) {
             uint8_t mt = p[o];
             const char *name = "UNKNOWN";
-            if (mt == 1)
-                name = "DISCOVER";
-            else if (mt == 2)
-                name = "OFFER";
-            else if (mt == 3)
-                name = "REQUEST";
-            else if (mt == 4)
-                name = "DECLINE";
-            else if (mt == 5)
-                name = "ACK";
-            else if (mt == 6)
-                name = "NAK";
-            else if (mt == 7)
-                name = "RELEASE";
-            else if (mt == 8)
-                name = "INFORM";
+            if (mt == 1) name = "DISCOVER";
+            else if (mt == 2) name = "OFFER";
+            else if (mt == 3) name = "REQUEST";
+            else if (mt == 4) name = "DECLINE";
+            else if (mt == 5) name = "ACK";
+            else if (mt == 6) name = "NAK";
+            else if (mt == 7) name = "RELEASE";
+            else if (mt == 8) name = "INFORM";
             printf("    opt53 msg-type=%u (%s)\n", (unsigned)mt, name);
             seen_msg = 1;
-        }
-        else if (tag == DHCP_OPT_REQ_IP && olen == 4)
-        {
+        } else if (tag == DHCP_OPT_REQ_IP && olen == 4) {
             char buf[32] = {0};
             inet_ntop(AF_INET, p + o, buf, sizeof(buf));
             printf("    opt50 requested-ip=%s\n", buf);
             seen_reqip = 1;
-        }
-        else if (tag == DHCP_OPT_LEASE && olen == 4)
-        {
-            unsigned int secs = (unsigned int)((p[o] << 24) | (p[o + 1] << 16) | (p[o + 2] << 8) | p[o + 3]);
+        } else if (tag == DHCP_OPT_LEASE && olen == 4) {
+            unsigned int secs = (unsigned int)((p[o] << 24) | (p[o+1] << 16) | (p[o+2] << 8) | p[o+3]);
             printf("    opt51 lease=%us\n", secs);
             seen_lease = 1;
-        }
-        else if (tag == DHCP_OPT_SERVER_ID && olen == 4)
-        {
+        } else if (tag == DHCP_OPT_SERVER_ID && olen == 4) {
             char buf[32] = {0};
             inet_ntop(AF_INET, p + o, buf, sizeof(buf));
             printf("    opt54 server-id=%s\n", buf);
             seen_svr = 1;
         }
 
-        /* move to next option */
         o += olen;
 
-        /* stop early if we already printed the essentials */
-        if (seen_msg && seen_reqip && seen_lease && seen_svr)
-            break;
+        /* stop early if essentials printed */
+        if (seen_msg && seen_reqip && seen_lease && seen_svr) break;
     }
 }
 
@@ -599,18 +621,22 @@ void handle_ipv6(const struct pcap_pkthdr *h, const unsigned char *p, int ip6_of
     inet_ntop(AF_INET6, &ip6->ip6_src, src6, sizeof(src6));
     inet_ntop(AF_INET6, &ip6->ip6_dst, dst6, sizeof(dst6));
 
-    if (g_verbose >= 2)
-    {
-        printf("IPv6: %s -> %s nh=%d hlim=%d plen=%d\n",
-               src6, dst6,
-               (int)ip6->ip6_nxt,
-               (int)ip6->ip6_hlim,
-               (int)ntohs(ip6->ip6_plen));
+    if (g_verbose == 3) {
+    uint32_t vtf = ntohl(ip6->ip6_flow);
+    unsigned int ver  = (vtf >> 28) & 0xF;
+    unsigned int tcls = (vtf >> 20) & 0xFF;
+    unsigned int flow = vtf & 0xFFFFF;
+    printf("IPv6: %s -> %s\n", src6, dst6);
+    printf("  version=%u tclass=%u flow=0x%05x\n", ver, tcls, flow);
+    printf("  payload-length=%u next-header=%u hop-limit=%u\n",
+           (unsigned)ntohs(ip6->ip6_plen), (unsigned)ip6->ip6_nxt, (unsigned)ip6->ip6_hlim);
+    } else if (g_verbose >= 2) {
+    printf("IPv6: %s -> %s nh=%d hlim=%d plen=%d\n",
+           src6, dst6, (int)ip6->ip6_nxt, (int)ip6->ip6_hlim, (int)ntohs(ip6->ip6_plen));
+    } else {
+    printf("IPv6: %s -> %s\n", src6, dst6);
     }
-    else
-    {
-        printf("IPv6: %s -> %s\n", src6, dst6);
-    }
+
 
     /* IPv6 header is 40 bytes */
     int l4off = ip6_off + 40;
@@ -650,15 +676,11 @@ void handle_icmp6(const struct pcap_pkthdr *h, const unsigned char *p, int off)
 
     /* Echo request/reply (128/129) */
     if (t == 128 || t == 129)
-    {
         printf(" (echo)");
-    }
 
     /* Neighbor Solicitation (135) */
-    if (t == ND_NEIGHBOR_SOLICIT)
-    {
-        if ((int)h->caplen >= off + (int)sizeof(struct nd_neighbor_solicit))
-        {
+    if (t == ND_NEIGHBOR_SOLICIT) {
+        if ((int)h->caplen >= off + (int)sizeof(struct nd_neighbor_solicit)) {
             const struct nd_neighbor_solicit *ns = (const struct nd_neighbor_solicit *)(p + off);
             char tgt[64] = {0};
             inet_ntop(AF_INET6, &ns->nd_ns_target, tgt, sizeof(tgt));
@@ -666,10 +688,8 @@ void handle_icmp6(const struct pcap_pkthdr *h, const unsigned char *p, int off)
         }
     }
     /* Neighbor Advertisement (136) */
-    else if (t == ND_NEIGHBOR_ADVERT)
-    {
-        if ((int)h->caplen >= off + (int)sizeof(struct nd_neighbor_advert))
-        {
+    else if (t == ND_NEIGHBOR_ADVERT) {
+        if ((int)h->caplen >= off + (int)sizeof(struct nd_neighbor_advert)) {
             const struct nd_neighbor_advert *na = (const struct nd_neighbor_advert *)(p + off);
             char tgt[64] = {0};
             inet_ntop(AF_INET6, &na->nd_na_target, tgt, sizeof(tgt));
@@ -679,8 +699,19 @@ void handle_icmp6(const struct pcap_pkthdr *h, const unsigned char *p, int off)
 
     printf("\n");
 
-    if (g_verbose == 3)
-    {
+    if (g_verbose == 3) {
+        /* checksum */
+        unsigned short cks = ntohs(ic6->icmp6_cksum);
+        printf("  checksum=0x%04x\n", (unsigned)cks);
+
+        /* echo id/seq (bytes 4..7) */
+        if ((t == 128 || t == 129) && (int)h->caplen >= off + 8) {
+            unsigned short eid  = (unsigned short)((p[off+4] << 8) | p[off+5]);
+            unsigned short eseq = (unsigned short)((p[off+6] << 8) | p[off+7]);
+            printf("  echo-id=%u echo-seq=%u\n", (unsigned)eid, (unsigned)eseq);
+        }
+
+        /* small payload hexdump */
         const unsigned char *pl = p + off + (int)sizeof(struct icmp6_hdr);
         int plen = (int)h->caplen - (int)(pl - p);
         if (plen > 0)
