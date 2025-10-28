@@ -12,7 +12,6 @@
 #include <netinet/icmp6.h>
 #include "bootp.h"
 
-
 /* compat for macOS/BSD vs Linux */
 
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
@@ -59,7 +58,6 @@
 
 int parse_ethernet(const struct pcap_pkthdr *h, const unsigned char *p, int *eth_type, int *l2len)
 {
-    (void)h;
     if ((int)h->caplen < 14)
         return -1;
     const unsigned char *d = p;
@@ -93,24 +91,40 @@ void print_mac(const unsigned char *m)
 /* IPv4 and dispatch to L4 */
 void handle_ipv4(const struct pcap_pkthdr *h, const unsigned char *p, int ip_off)
 {
-    if ((int)h->caplen < ip_off + (int)sizeof(struct ip))
-        return;
+    if ((int)h->caplen < ip_off + (int)sizeof(struct ip)) return;
+
     const struct ip *ip = (const struct ip *)(p + ip_off);
     int ihl = ip->ip_hl * 4;
-    if ((int)h->caplen < ip_off + ihl)
-        return;
+    if ((int)h->caplen < ip_off + ihl) return;
 
     char src[32] = {0}, dst[32] = {0};
     inet_ntop(AF_INET, &ip->ip_src, src, sizeof(src));
     inet_ntop(AF_INET, &ip->ip_dst, dst, sizeof(dst));
 
-    if (g_verbose >= 2)
-    {
+    if (g_verbose == 3) {
+        unsigned int ver  = ip->ip_v;
+        unsigned int tos  = ip->ip_tos;
+        unsigned int dscp = (tos >> 2) & 0x3F;
+        unsigned int ecn  = tos & 0x3;
+        unsigned short tlen = ntohs(ip->ip_len);
+        unsigned short id   = ntohs(ip->ip_id);
+        unsigned short offf = ntohs(ip->ip_off);
+        unsigned int df  = (offf & 0x4000) ? 1 : 0;
+        unsigned int mf  = (offf & 0x2000) ? 1 : 0;
+        unsigned int frag_off = offf & 0x1FFF;
+        unsigned short sum = ntohs(ip->ip_sum);
+        unsigned int opts = (ihl > 20) ? (ihl - 20) : 0;
+
+        printf("IPv4: %s -> %s\n", src, dst);
+        printf("  version=%u ihl=%u dscp=%u ecn=%u\n", ver, (unsigned)ihl, dscp, ecn);
+        printf("  total-length=%u id=%u flags:DF=%u MF=%u frag-offset=%u\n",
+               tlen, id, df, mf, frag_off);
+        printf("  ttl=%u proto=%u hdr-checksum=0x%04x\n", ip->ip_ttl, ip->ip_p, sum);
+        if (opts) printf("  options-bytes=%u\n", opts);
+    } else if (g_verbose >= 2) {
         printf("IPv4: %s -> %s proto=%d ttl=%d len=%d id=%d\n",
                src, dst, ip->ip_p, ip->ip_ttl, ntohs(ip->ip_len), ntohs(ip->ip_id));
-    }
-    else
-    {
+    } else {
         printf("IPv4: %s -> %s\n", src, dst);
     }
 
@@ -183,11 +197,25 @@ void handle_arp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
 /* ICMPv4 */
 void handle_icmp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
 {
-    if ((int)h->caplen < off + (int)sizeof(ICMPHDR))
-        return;
+    if ((int)h->caplen < off + 4) return; /* type+code+checksum */
     const ICMPHDR *ic = (const ICMPHDR *)(p + off);
-    printf("ICMP: type=%d code=%d\n", ICMP_TYPE(ic), ICMP_CODE(ic));
+    unsigned short cks = (unsigned short)((p[off+2] << 8) | p[off+3]);
+
+    if (g_verbose == 3) {
+        printf("ICMPv4:\n");
+        printf("  type=%d code=%d checksum=0x%04x\n",
+               (int)ICMP_TYPE(ic), (int)ICMP_CODE(ic), (unsigned)cks);
+        /* echo request(8) / reply(0): next 4 bytes -> id/seq */
+        if ((ICMP_TYPE(ic) == 8 || ICMP_TYPE(ic) == 0) && (int)h->caplen >= off + 8) {
+            unsigned short eid  = (unsigned short)((p[off+4] << 8) | p[off+5]);
+            unsigned short eseq = (unsigned short)((p[off+6] << 8) | p[off+7]);
+            printf("  echo-id=%u echo-seq=%u\n", (unsigned)eid, (unsigned)eseq);
+        }
+    } else {
+        printf("ICMP: type=%d code=%d\n", ICMP_TYPE(ic), ICMP_CODE(ic));
+    }
 }
+
 
 /* UDP + app guesses */
 void handle_udp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
@@ -238,8 +266,6 @@ void handle_tcp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
 
     const unsigned char *pl = p + off + doff;
     int plen = (int)h->caplen - (int)(pl - p);
-    if (dp == 80 || sp == 80)
-        try_http(pl, plen);
     if (dp == 80 || sp == 80)
         try_http(pl, plen);
     if (dp == 21 || sp == 21)
@@ -318,107 +344,87 @@ static int dns_read_name(const unsigned char *msg, int msglen, int off,
 void try_dns(const unsigned char *p, int len)
 {
     /* DNS: header, first question (QNAME/QTYPE/QCLASS), first answer (A/AAAA/CNAME) */
-    if (len < 12)
-    {
-        printf("  DNS (truncated)\n");
-        return;
-    }
+    if (len < 12) { printf("  DNS (truncated)\n"); return; }
 
     int i = 0;
-    unsigned short id = rd16(p + i);
-    i += 2;
-    unsigned short flags = rd16(p + i);
-    i += 2;
-    unsigned short qd = rd16(p + i);
-    i += 2;
-    unsigned short an = rd16(p + i);
-    i += 2;
-    unsigned short ns = rd16(p + i);
-    i += 2;
-    unsigned short ar = rd16(p + i);
-    i += 2;
-    (void)flags;
-    (void)ns;
-    (void)ar;
+    unsigned short id = rd16(p + i); i += 2;
+    unsigned short flags = rd16(p + i); i += 2;
+    unsigned short qd = rd16(p + i); i += 2;
+    unsigned short an = rd16(p + i); i += 2;
+    unsigned short ns = rd16(p + i); i += 2;
+    unsigned short ar = rd16(p + i); i += 2;
 
-    printf("  DNS: id=0x%04x qd=%u an=%u\n", id, (unsigned)qd, (unsigned)an);
+    if (g_verbose == 3) {
+        unsigned short fl = flags;
+        unsigned int QR    = (fl >> 15) & 1;
+        unsigned int OPC   = (fl >> 11) & 0xF;
+        unsigned int AA    = (fl >> 10) & 1;
+        unsigned int TC    = (fl >> 9)  & 1;
+        unsigned int RD    = (fl >> 8)  & 1;
+        unsigned int RA    = (fl >> 7)  & 1;
+        unsigned int Z     = (fl >> 4)  & 0x7;
+        unsigned int RCODE = (fl      ) & 0xF;
+
+        printf("  DNS:\n");
+        printf("    id=0x%04x\n", id);
+        printf("    flags: QR=%u OPCODE=%u AA=%u TC=%u RD=%u RA=%u Z=%u RCODE=%u\n",
+               QR, OPC, AA, TC, RD, RA, Z, RCODE);
+        printf("    counts: QD=%u AN=%u NS=%u AR=%u\n",
+               (unsigned)qd, (unsigned)an, (unsigned)ns, (unsigned)ar);
+    } else {
+        printf("  DNS: id=0x%04x qd=%u an=%u\n", id, (unsigned)qd, (unsigned)an);
+        (void)flags; (void)ns; (void)ar; /* silence unused in v<3 */
+    }
 
     /* First question (if any) */
-    if (qd > 0)
-    {
+    if (qd > 0) {
         char qname[256];
         int consumed = 0;
-        if (dns_read_name(p, len, i, qname, sizeof(qname), &consumed) == 0)
-        {
+        if (dns_read_name(p, len, i, qname, sizeof(qname), &consumed) == 0) {
             i += consumed;
-            if (i + 4 <= len)
-            {
-                unsigned short qtype = rd16(p + i);
-                i += 2;
-                unsigned short qclass = rd16(p + i);
-                i += 2;
-                printf("    Q: %s  type=%u class=%u\n", qname, (unsigned)qtype, (unsigned)qclass);
-            }
-            else
-            {
+            if (i + 4 <= len) {
+                unsigned short qtype  = rd16(p + i); i += 2;
+                unsigned short qclass = rd16(p + i); i += 2;
+                printf("    Q: %s  type=%u class=%u\n",
+                       qname, (unsigned)qtype, (unsigned)qclass);
+            } else {
                 return;
             }
-        }
-        else
-        {
+        } else {
             return;
         }
     }
 
     /* First answer (if any) */
-    if (an > 0)
-    {
+    if (an > 0) {
         char name[256];
         int consumed = 0;
-        if (dns_read_name(p, len, i, name, sizeof(name), &consumed) != 0)
-            return;
+        if (dns_read_name(p, len, i, name, sizeof(name), &consumed) != 0) return;
         i += consumed;
 
-        if (i + 10 > len)
-            return;
-        unsigned short type = rd16(p + i);
-        i += 2;
-        unsigned short aclass = rd16(p + i);
-        i += 2;
-        unsigned int ttl = rd32(p + i);
-        i += 4;
-        unsigned short rdlen = rd16(p + i);
-        i += 2;
-        if (i + rdlen > len)
-            return;
+        if (i + 10 > len) return;
+        unsigned short type   = rd16(p + i); i += 2;
+        unsigned short aclass = rd16(p + i); i += 2;
+        unsigned int   ttl    = rd32(p + i); i += 4;
+        unsigned short rdlen  = rd16(p + i); i += 2;
+        if (i + rdlen > len) return;
 
         printf("    A: %s  type=%u class=%u ttl=%u ", name, (unsigned)type, (unsigned)aclass, ttl);
 
-        if (type == 1 && rdlen == 4)
-        {
-            printf("addr=%u.%u.%u.%u\n", p[i], p[i + 1], p[i + 2], p[i + 3]);
-        }
-        else if (type == 28 && rdlen == 16)
-        {
+        if (type == 1 && rdlen == 4) {
+            printf("addr=%u.%u.%u.%u\n", p[i], p[i+1], p[i+2], p[i+3]);
+        } else if (type == 28 && rdlen == 16) {
             char buf[64] = {0};
             inet_ntop(AF_INET6, p + i, buf, sizeof(buf));
             printf("addr=%s\n", buf);
-        }
-        else if (type == 5)
-        { /* CNAME */
-            char cname[256];
-            int cused = 0;
-            if (dns_read_name(p, len, i, cname, sizeof(cname), &cused) == 0)
-            {
+        } else if (type == 5) { /* CNAME */
+            char cname[256]; int cused = 0;
+            if (dns_read_name(p, len, i, cname, sizeof(cname), &cused) == 0) {
                 printf("cname=%s\n", cname);
-            }
-            else
-            {
+            } else {
                 printf("rdata(%u bytes)\n", (unsigned)rdlen);
             }
-        }
-        else
-        {
+        } else {
             printf("rdata(%u bytes)\n", (unsigned)rdlen);
         }
     }
