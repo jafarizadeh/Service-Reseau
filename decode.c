@@ -12,6 +12,7 @@
 #include <netinet/icmp6.h>
 #include "bootp.h"
 
+
 /* compat for macOS/BSD vs Linux */
 
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)

@@ -1,5 +1,5 @@
-
-#include <pcap.h>
+#include <sys/types.h>
+#include <pcap/pcap.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +8,8 @@
 #include <net/ethernet.h>
 
 #include "decode.h"
+
+
 
 int g_verbose = 2;
 static pcap_t *g_handle = NULL;
