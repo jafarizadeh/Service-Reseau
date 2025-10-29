@@ -7,7 +7,6 @@
 #include "compat.h"
 #include "bootp.h"
 
-/* global verbose flag (defined in main.c) */
 extern int g_verbose;
 
 void hexdump(const unsigned char *p, int len, int max_bytes);
