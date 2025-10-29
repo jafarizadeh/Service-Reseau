@@ -30,22 +30,23 @@ static int apply_filter(pcap_t *h, const char *iface_or_null, const char *bpf) {
     return 0;
 }
 
+static void on_sigint(int s) {
+    (void)s;
+    if (g_handle) pcap_breakloop(g_handle);
+}
 
 static void got_packet(u_char *user, const struct pcap_pkthdr *h, const u_char *p) {
     (void)user;
 
-    if (g_verbose == 1) {
-        print_summary_line(h, p);
-        return;
-    }
+    if (g_verbose == 1) { print_summary_line(h, p); return; }
 
     int eth_type = 0, l2len = 0;
-    if (parse_ethernet(h, p, &eth_type, &l2len) != 0) {
-        return;
+    if (parse_ethernet(h, p, &eth_type, &l2len) != 0) return;
+
+    else {
+        if (g_verbose >= 2) printf("Unknown EtherType: 0x%04x\n", eth_type);
     }
-
 }
-
 
 int main(int argc, char **argv) {
     char *iface = NULL, *of = NULL, *bpf = NULL;
@@ -81,8 +82,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    pcap_loop(g_handle, -1, got_packet, NULL);
-
+    signal(SIGINT, on_sigint);
+    if (pcap_loop(g_handle, -1, got_packet, NULL) == -1)
+        fprintf(stderr, "pcap_loop error: %s\n", pcap_geterr(g_handle));
     pcap_close(g_handle);
     return 0;
 }

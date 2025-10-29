@@ -7,14 +7,15 @@
 #include "compat.h"
 #include "bootp.h"
 
+/* global verbose flag (defined in main.c) */
 extern int g_verbose;
 
-void hexdump(const unsigned char *p, int len, int max_bytes);
-void print_summary_line(const struct pcap_pkthdr *h, const unsigned char *p);
+/* L2 */
+int  parse_ethernet(const struct pcap_pkthdr *h, const unsigned char *p, int *eth_type, int *l2len);
 void print_mac(const unsigned char *m);
 
-int parse_ethernet(const struct pcap_pkthdr *h, const unsigned char *p,
-                   int *eth_type, int *l2len);
-
+/* utils */
+void hexdump(const unsigned char *p, int len, int max_bytes);
+void print_summary_line(const struct pcap_pkthdr *h, const unsigned char *p);
 
 #endif 
