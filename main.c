@@ -30,14 +30,22 @@ static int apply_filter(pcap_t *h, const char *iface_or_null, const char *bpf) {
     return 0;
 }
 
+
 static void got_packet(u_char *user, const struct pcap_pkthdr *h, const u_char *p) {
     (void)user;
+
     if (g_verbose == 1) {
         print_summary_line(h, p);
         return;
     }
-    print_summary_line(h, p);
+
+    int eth_type = 0, l2len = 0;
+    if (parse_ethernet(h, p, &eth_type, &l2len) != 0) {
+        return;
+    }
+
 }
+
 
 int main(int argc, char **argv) {
     char *iface = NULL, *of = NULL, *bpf = NULL;
