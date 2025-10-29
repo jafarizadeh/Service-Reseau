@@ -30,6 +30,15 @@ static int apply_filter(pcap_t *h, const char *iface_or_null, const char *bpf) {
     return 0;
 }
 
+static void got_packet(u_char *user, const struct pcap_pkthdr *h, const u_char *p) {
+    (void)user;
+    if (g_verbose == 1) {
+        print_summary_line(h, p);
+        return;
+    }
+    print_summary_line(h, p);
+}
+
 int main(int argc, char **argv) {
     char *iface = NULL, *of = NULL, *bpf = NULL;
     int opt;
@@ -47,15 +56,12 @@ int main(int argc, char **argv) {
 
     char errbuf[PCAP_ERRBUF_SIZE] = {0};
     if (iface) {
-        /* live: snaplen=65535, promisc=1, timeout=1000ms (comme l’original) */
         g_handle = pcap_open_live(iface, 65535, 1, 1000, errbuf);
     } else {
-        /* offline: lecture d’un fichier pcap */
         g_handle = pcap_open_offline(of, errbuf);
     }
     if (!g_handle) { fprintf(stderr, "%s\n", errbuf); return 1; }
 
-    /* conforme au TP et au fichier original : Ethernet uniquement */
     if (pcap_datalink(g_handle) != DLT_EN10MB) {
         fprintf(stderr, "Only Ethernet is supported.\n");
         pcap_close(g_handle);
@@ -66,6 +72,8 @@ int main(int argc, char **argv) {
         pcap_close(g_handle);
         return 1;
     }
+
+    pcap_loop(g_handle, -1, got_packet, NULL);
 
     pcap_close(g_handle);
     return 0;
