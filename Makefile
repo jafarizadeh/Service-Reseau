@@ -5,6 +5,7 @@ LDFLAGS=-lpcap
 OBJS=main.o \
 	L2.o \
 	L3_arp.o L3_ipv4.o\
+	L4_icmp.o L4_udp.o L4_tcp.o \
 	util.o
 
 all: analyseur

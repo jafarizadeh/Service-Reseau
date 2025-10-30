@@ -18,6 +18,11 @@ void print_mac(const unsigned char *m);
 void handle_arp (const struct pcap_pkthdr *h, const unsigned char *p, int off);
 void handle_ipv4(const struct pcap_pkthdr *h, const unsigned char *p, int ip_off);
 
+/* L4 */
+void handle_icmp (const struct pcap_pkthdr *h, const unsigned char *p, int off);
+void handle_icmp6(const struct pcap_pkthdr *h, const unsigned char *p, int off);
+void handle_udp  (const struct pcap_pkthdr *h, const unsigned char *p, int off);
+void handle_tcp  (const struct pcap_pkthdr *h, const unsigned char *p, int off);
 
 /* utils */
 void hexdump(const unsigned char *p, int len, int max_bytes);
