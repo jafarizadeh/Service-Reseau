@@ -2,7 +2,7 @@ CC=gcc
 CFLAGS=-std=c11 -Wall -Wextra -O2 -D_DEFAULT_SOURCE
 LDFLAGS=-lpcap
 
-OBJS=main.o L2.o util.o
+OBJS=main.o L2.o util.o L3_arp.o
 
 all: analyseur
 

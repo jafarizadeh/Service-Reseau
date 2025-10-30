@@ -14,6 +14,9 @@ extern int g_verbose;
 int  parse_ethernet(const struct pcap_pkthdr *h, const unsigned char *p, int *eth_type, int *l2len);
 void print_mac(const unsigned char *m);
 
+/* L3 */
+void handle_arp (const struct pcap_pkthdr *h, const unsigned char *p, int off);
+
 /* utils */
 void hexdump(const unsigned char *p, int len, int max_bytes);
 void print_summary_line(const struct pcap_pkthdr *h, const unsigned char *p);
