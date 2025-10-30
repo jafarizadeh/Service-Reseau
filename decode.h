@@ -16,6 +16,8 @@ void print_mac(const unsigned char *m);
 
 /* L3 */
 void handle_arp (const struct pcap_pkthdr *h, const unsigned char *p, int off);
+void handle_ipv4(const struct pcap_pkthdr *h, const unsigned char *p, int ip_off);
+
 
 /* utils */
 void hexdump(const unsigned char *p, int len, int max_bytes);

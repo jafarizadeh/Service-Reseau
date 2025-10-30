@@ -44,6 +44,7 @@ static void got_packet(u_char *user, const struct pcap_pkthdr *h, const u_char *
     if (parse_ethernet(h, p, &eth_type, &l2len) != 0) return;
 
     if (eth_type == ETHERTYPE_ARP)  handle_arp (h, p, l2len);
+    else if (eth_type == ETHERTYPE_IP) handle_ipv4(h, p, l2len);
     else {
         if (g_verbose >= 2) printf("Unknown EtherType: 0x%04x\n", eth_type);
     }
