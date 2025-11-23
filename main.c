@@ -1,4 +1,3 @@
-#define _DEFAULT_SOURCE
 #include <sys/types.h>
 #include <sys/time.h>
 #include <pcap/pcap.h>

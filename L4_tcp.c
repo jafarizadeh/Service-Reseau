@@ -5,39 +5,6 @@
 #include "l7.h"
 
 
-/* TCP compatibility (BSD/macOS vs Linux) */
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
-  #define TCP_SPORT(t) ntohs((t)->th_sport)
-  #define TCP_DPORT(t) ntohs((t)->th_dport)
-  #define TCP_DOFF(t)  ((t)->th_off * 4)
-  #define TCP_FLAG_SYN(t) ((t)->th_flags & TH_SYN)
-  #define TCP_FLAG_ACK(t) ((t)->th_flags & TH_ACK)
-  #define TCP_FLAG_FIN(t) ((t)->th_flags & TH_FIN)
-  #define TCP_FLAG_RST(t) ((t)->th_flags & TH_RST)
-  #define TCP_FLAG_PSH(t) ((t)->th_flags & TH_PUSH)
-  #define TCP_FLAG_URG(t) ((t)->th_flags & TH_URG)
-  #define TCP_SEQ(t)   ntohl((t)->th_seq)
-  #define TCP_ACKN(t)  ntohl((t)->th_ack)
-  #define TCP_WIN(t)   ntohs((t)->th_win)
-  #define TCP_SUM(t)   ntohs((t)->th_sum)
-  #define TCP_URP(t)   ntohs((t)->th_urp)
-#else
-  #define TCP_SPORT(t) ntohs((t)->source)
-  #define TCP_DPORT(t) ntohs((t)->dest)
-  #define TCP_DOFF(t)  ((t)->doff * 4)
-  #define TCP_FLAG_SYN(t) ((t)->syn)
-  #define TCP_FLAG_ACK(t) ((t)->ack)
-  #define TCP_FLAG_FIN(t) ((t)->fin)
-  #define TCP_FLAG_RST(t) ((t)->rst)
-  #define TCP_FLAG_PSH(t) ((t)->psh)
-  #define TCP_FLAG_URG(t) ((t)->urg)
-  #define TCP_SEQ(t)   ntohl((t)->seq)
-  #define TCP_ACKN(t)  ntohl((t)->ack_seq)
-  #define TCP_WIN(t)   ntohs((t)->window)
-  #define TCP_SUM(t)   ntohs((t)->check)
-  #define TCP_URP(t)   ntohs((t)->urg_ptr)
-#endif
-
 /* TCP handler: prints flags and tries HTTP/FTP/SMTP by port */
 void handle_tcp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
 {

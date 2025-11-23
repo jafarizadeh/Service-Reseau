@@ -1,9 +1,10 @@
 APP := analyseur
 CC  := gcc
 
-CFLAGS  ?= -std=c11 -Wall -Wextra -O2 -MMD -MP -D_DEFAULT_SOURCE
-LDFLAGS ?=
-LDLIBS  ?= -lpcap
+CPPFLAGS ?= -D_DEFAULT_SOURCE
+CFLAGS   ?= -std=c11 -Wall -Wextra -O2 -MMD -MP
+LDFLAGS  ?=
+LDLIBS   ?= -lpcap
 
 SRCS := \
   main.c \
@@ -21,17 +22,18 @@ SRCS += $(wildcard L7_*.c)
 OBJS := $(SRCS:.c=.o)
 DEPS := $(OBJS:.o=.d)
 
+.PHONY: all clean run print-%
+
 all: $(APP)
 
 $(APP): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LDLIBS)
+	$(CC) -o $@ $^ $(LDFLAGS) $(LDLIBS)
 
 %.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 clean:
 	rm -f $(OBJS) $(DEPS) $(APP)
-
 
 run: $(APP)
 	@if [ -n "$(IFACE)" ]; then \

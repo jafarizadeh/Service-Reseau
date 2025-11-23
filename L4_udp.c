@@ -5,18 +5,6 @@
 #include "l7.h"
 
 
-/* UDP field compatibility (BSD/macOS vs Linux) */
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
-  #define UDP_SPORT(u) ntohs((u)->uh_sport)
-  #define UDP_DPORT(u) ntohs((u)->uh_dport)
-  #define UDP_LEN(u)   ntohs((u)->uh_ulen)
-  #define UDP_SUM(u)   ntohs((u)->uh_sum)
-#else
-  #define UDP_SPORT(u) ntohs((u)->source)
-  #define UDP_DPORT(u) ntohs((u)->dest)
-  #define UDP_LEN(u)   ntohs((u)->len)
-  #define UDP_SUM(u)   ntohs((u)->check)
-#endif
 
 /* UDP handler: prints basic info and tries DNS/DHCP */
 void handle_udp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
