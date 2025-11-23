@@ -1,22 +1,49 @@
-CC=gcc
-CFLAGS=-std=c11 -Wall -Wextra -O2 -D_DEFAULT_SOURCE
-LDFLAGS=-lpcap
+APP := analyseur
+CC  := gcc
 
-OBJS=main.o \
-	L2.o \
-	L3_arp.o L3_ipv4.o\
-	L4_icmp.o L4_udp.o L4_tcp.o \
-	util.o
+CFLAGS  ?= -std=c11 -Wall -Wextra -O2 -MMD -MP -D_DEFAULT_SOURCE
+LDFLAGS ?=
+LDLIBS  ?= -lpcap
 
-all: analyseur
+SRCS := \
+  main.c \
+  L2.c \
+  L3_arp.c \
+  L3_ipv4.c \
+  L4_icmp.c \
+  L4_udp.c \
+  L4_tcp.c \
+  util.c
 
-analyseur: $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
+SRCS += $(wildcard L3_ipv6.c)
+SRCS += $(wildcard L7_*.c)
+
+OBJS := $(SRCS:.c=.o)
+DEPS := $(OBJS:.o=.d)
+
+all: $(APP)
+
+$(APP): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LDLIBS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJS) analyseur
+	rm -f $(OBJS) $(DEPS) $(APP)
 
-.PHONY: all clean
+
+run: $(APP)
+	@if [ -n "$(IFACE)" ]; then \
+	  sudo ./$(APP) -i $(IFACE) -v $${VERB:-2} $(if $(FILTER),-f '$(FILTER)'); \
+	elif [ -n "$(PCAP)" ]; then \
+	  ./$(APP) -o $(PCAP) -v $${VERB:-2} $(if $(FILTER),-f '$(FILTER)'); \
+	else \
+	  echo "Usage: make run IFACE=<dev> [VERB=1|2|3] [FILTER=<bpf>]"; \
+	  echo "   or: make run PCAP=file.pcap [VERB=1|2|3] [FILTER=<bpf>]"; \
+	fi
+
+print-%:
+	@echo '$* = $($*)'
+
+-include $(DEPS)
