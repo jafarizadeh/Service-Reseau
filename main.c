@@ -42,26 +42,31 @@ static void on_sigint(int s) {
 }
 
 /* pcap callback: update perf counters first, then decode */
-static void got_packet(u_char *user, const struct pcap_pkthdr *h, const u_char *p) {
+
+static void got_packet(u_char *user, const struct pcap_pkthdr *h, const u_char *p)
+{
     (void)user;
 
-    /* perf counters */
-    if (!g_started) { g_t0 = h->ts; g_started = 1; }
-    g_t1 = h->ts;
-    g_pkt_count++;
-    g_byte_count += h->len;
-
-    if (g_verbose == 1) { print_summary_line(h, p); return; }
+    if (g_verbose == 1) {
+        print_summary_line(h, p);
+        return;
+    }
 
     int eth_type = 0, l2len = 0;
     if (parse_ethernet(h, p, &eth_type, &l2len) != 0) return;
 
-    if (eth_type == ETHERTYPE_IP)        handle_ipv4(h, p, l2len);
-    else if (eth_type == ETHERTYPE_ARP)  handle_arp (h, p, l2len);
-    else {
-        if (g_verbose >= 2) printf("Unknown EtherType: 0x%04x\n", eth_type);
+    if (eth_type == ETHERTYPE_IP) {
+        handle_ipv4(h, p, l2len);
+    } else if (eth_type == ETHERTYPE_IPV6) {   // <-- add this line
+        handle_ipv6(h, p, l2len);
+    } else if (eth_type == ETHERTYPE_ARP) {
+        handle_arp(h, p, l2len);
+    } else {
+        if (g_verbose >= 2)
+            printf("Unknown EtherType: 0x%04x\n", eth_type);
     }
 }
+
 
 static void print_perf_summary(void) {
     printf("\n=== Performance summary ===\n");
