@@ -9,7 +9,11 @@
 #include <netinet/ip6.h>
 #include <netinet/icmp6.h>
 
-/* TCP flag access (BSD vs Linux field names) */
+/* Ce fichier regroupe des macros de portabilité.
+   Objectif : masquer les différences de noms de champs entre Linux et BSD/macOS,
+   afin de garder un code unique dans les handlers L4/L3. */
+
+/* Accès aux flags TCP (BSD : th_flags / Linux : champs bitfields). */
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
 #  define TCP_FLAG_SYN(th) ((th)->th_flags & TH_SYN)
 #  define TCP_FLAG_ACK(th) ((th)->th_flags & TH_ACK)
@@ -26,7 +30,7 @@
 #  define TCP_FLAG_URG(th) ((th)->urg)
 #endif
 
-/* ICMPv4 type/code (BSD vs Linux) */
+/* ICMPv4 : type/code (BSD : struct icmp / Linux : struct icmphdr). */
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
 #  define ICMPHDR struct icmp
 #  define ICMP_TYPE(h) ((h)->icmp_type)
@@ -37,7 +41,7 @@
 #  define ICMP_CODE(h) ((h)->code)
 #endif
 
-/* UDP helpers (BSD vs Linux) */
+/* UDP : helpers pour ports/longueur/checksum selon la plateforme. */
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
 #  define UDP_SPORT(u) ntohs((u)->uh_sport)
 #  define UDP_DPORT(u) ntohs((u)->uh_dport)
@@ -50,7 +54,7 @@
 #  define UDP_SUM(u)   ntohs((u)->check)
 #endif
 
-/* TCP helpers (BSD vs Linux) */
+/* TCP : helpers pour ports, taille d'en-tête (doff), seq/ack, fenêtre, checksum, urgptr. */
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
 #  define TCP_SPORT(t) ntohs((t)->th_sport)
 #  define TCP_DPORT(t) ntohs((t)->th_dport)
@@ -71,4 +75,4 @@
 #  define TCP_URP(t)   ntohs((t)->urg_ptr)
 #endif
 
-#endif /* COMPAT_H */
+#endif

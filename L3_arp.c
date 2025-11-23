@@ -2,12 +2,13 @@
 #include <stdio.h>
 #include <arpa/inet.h>
 
-/* ARP: minimal parser (hardware/proto sizes are taken from frame) */
 void handle_arp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
 {
+    /* ARP a au minimum 8 octets (HTYPE, PTYPE, HLEN, PLEN, OPER). */
     if ((int)h->caplen < off + 8)
         return;
 
+    /* Champs fixes ARP (big-endian). */
     const unsigned char *a = p + off;
     unsigned short htype = (unsigned short)((a[0] << 8) | a[1]);
     unsigned short ptype = (unsigned short)((a[2] << 8) | a[3]);
@@ -15,10 +16,12 @@ void handle_arp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
     unsigned char  plen  = a[5];
     unsigned short oper  = (unsigned short)((a[6] << 8) | a[7]);
 
+    /* Longueur totale ARP dépendante de HLEN/PLEN : 8 + SHA+SPA+THA+TPA. */
     int need = 8 + hlen + plen + hlen + plen; 
     if ((int)h->caplen < off + need)
         return;
 
+    /* Pointeurs vers les adresses ARP dans la trame. */
     const unsigned char *sha = a + 8;
     const unsigned char *spa = sha + hlen;
     const unsigned char *tha = spa + plen;
@@ -34,6 +37,8 @@ void handle_arp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
     printf("  Sender MAC: ");
     print_mac(sha);
     printf("\n");
+
+    /* Cas courant : protocole IPv4 (PLEN=4). */
     if (plen == 4) {
         printf("  Sender IP : %u.%u.%u.%u\n", spa[0], spa[1], spa[2], spa[3]);
     } else {

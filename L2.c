@@ -2,15 +2,18 @@
 #include <net/ethernet.h>
 #include "decode.h"
 
-/* MAC printer is in util.c */
+/* print_mac() est définie dans util.c */
 
 int parse_ethernet(const struct pcap_pkthdr *h, const unsigned char *p, int *eth_type, int *l2len) {
     if ((int)h->caplen < 14) return -1;
 
     const unsigned char *d = p;
+
+    /* Résumé L2 : affichage des adresses MAC destination/source. */
     printf("Ethernet: dst="); print_mac(d);
     printf(" src=");          print_mac(d + 6);
 
+    /* EtherType est codé en big-endian dans les octets 12..13. */
     unsigned short et = (unsigned short)(d[12] << 8 | d[13]);
     int off = 14;
 
@@ -20,8 +23,12 @@ int parse_ethernet(const struct pcap_pkthdr *h, const unsigned char *p, int *eth
         unsigned int pcp = (tci >> 13) & 0x7;
         unsigned int dei = (tci >> 12) & 0x1;
         unsigned int vid = tci & 0x0FFF;
+
+        /* Les champs VLAN ne sont affichés qu’en verbosité 3. */
         if (g_verbose == 3)
             printf("  802.1Q: PCP=%u DEI=%u VID=%u\n", pcp, dei, vid);
+        
+        /* EtherType interne après le tag VLAN. */
         et = (unsigned short)(d[16] << 8 | d[17]);
         off = 18;
     }

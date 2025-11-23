@@ -7,11 +7,16 @@
 
 void handle_ipv4(const struct pcap_pkthdr *h, const unsigned char *p, int ip_off)
 {
+    /* vérifier qu’on a au moins un en-tête IPv4 minimal avant de caster. */
     if ((int)h->caplen < ip_off + (int)sizeof(struct ip))
         return;
 
     const struct ip *ip = (const struct ip *)(p + ip_off);
+
+    /* IHL est en mots de 32 bits -> conversion en octets. */
     int ihl = ip->ip_hl * 4;
+
+    /* l'en-tête peut être plus long que 20 octets (options). */
     if ((int)h->caplen < ip_off + ihl)
         return;
 
@@ -19,6 +24,7 @@ void handle_ipv4(const struct pcap_pkthdr *h, const unsigned char *p, int ip_off
     inet_ntop(AF_INET, &ip->ip_src, src, sizeof(src));
     inet_ntop(AF_INET, &ip->ip_dst, dst, sizeof(dst));
 
+    /* Trois niveaux d’affichage selon la verbosité demandée. */
     if (g_verbose == 3) {
         unsigned int ver  = ip->ip_v;
         unsigned int tos  = ip->ip_tos;
@@ -48,8 +54,10 @@ void handle_ipv4(const struct pcap_pkthdr *h, const unsigned char *p, int ip_off
         printf("IPv4: %s -> %s\n", src, dst);
     }
 
-    
+    /* Offset de la couche transport = début IP + longueur réelle de l’en-tête IPv4. */
     int l4off = ip_off + ihl;
+
+    /* Dispatch L4 selon le champ Protocol (ip_p). */
     if (ip->ip_p == IPPROTO_TCP)
         handle_tcp(h, p, l4off);
     else if (ip->ip_p == IPPROTO_UDP)

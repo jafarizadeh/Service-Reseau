@@ -4,9 +4,9 @@
 #include <arpa/inet.h>
 #include <netinet/ip6.h>
 
-/* IPv6: fixed header parse + simple L4 dispatch */
 void handle_ipv6(const struct pcap_pkthdr *h, const unsigned char *p, int ip6_off)
 {
+    /* vérifier qu’on a tout l’en-tête IPv6 fixe (40 octets). */
     if ((int)h->caplen < ip6_off + (int)sizeof(struct ip6_hdr))
         return;
 
@@ -16,6 +16,7 @@ void handle_ipv6(const struct pcap_pkthdr *h, const unsigned char *p, int ip6_of
     inet_ntop(AF_INET6, &ip6->ip6_dst, dst6, sizeof(dst6));
 
     if (g_verbose == 3) {
+        /* ip6_flow contient version + traffic class + flow label (big-endian). */
         uint32_t vtf = ntohl(ip6->ip6_flow);
         unsigned int ver  = (vtf >> 28) & 0xF;
         unsigned int tcls = (vtf >> 20) & 0xFF;
@@ -36,10 +37,11 @@ void handle_ipv6(const struct pcap_pkthdr *h, const unsigned char *p, int ip6_of
         printf("IPv6: %s -> %s\n", src6, dst6);
     }
 
-    /* IPv6 fixed header is 40 bytes; ignoring extension headers */
+    /* En-tête IPv6 fixe = 40 octets ; on ignore volontairement les extension headers. */
     int l4off = ip6_off + 40;
     int nh = ip6->ip6_nxt;
 
+    /* Dispatch L4 selon Next Header. */
     if (nh == IPPROTO_TCP)
         handle_tcp(h, p, l4off);
     else if (nh == IPPROTO_UDP)

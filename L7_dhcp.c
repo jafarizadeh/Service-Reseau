@@ -3,9 +3,14 @@
 #include <stdio.h>
 #include <arpa/inet.h>
 
-/* decode DHCP/BOOTP header + key options */
+/* Décodage DHCP/BOOTP :
+   - parse l’en-tête BOOTP fixe,
+   - puis lit quelques options DHCP clés (53/50/51/54).
+   Objectif : affichage pédagogique, sans décodage exhaustif. */
 void try_dhcp(const unsigned char *p, int len)
 {
+
+    /* l’en-tête BOOTP a une taille fixe (236 octets). */
     if (len < (int)sizeof(struct bootp)) {
         printf("  DHCP/BOOTP (truncated)\n");
         return;
@@ -17,10 +22,12 @@ void try_dhcp(const unsigned char *p, int len)
            (unsigned)bp->bp_op, (unsigned)bp->bp_htype, (unsigned)bp->bp_hlen,
            (unsigned)ntohl(bp->bp_xid));
 
+    /* yiaddr = adresse IP attribuée au client dans les réponses DHCP. */
     char yi[32] = {0};
     inet_ntop(AF_INET, &bp->bp_yiaddr, yi, sizeof(yi));
     printf("    yiaddr=%s\n", yi);
 
+    /* chaddr = MAC du client (lecture limitée à 6 octets pour Ethernet). */
     if (bp->bp_hlen == 6) {
         printf("    chaddr=");
         for (int i = 0; i < 6; i++)
@@ -29,6 +36,7 @@ void try_dhcp(const unsigned char *p, int len)
     }
 
     if (g_verbose == 3) {
+        /* En v=3 on affiche aussi les champs BOOTP secondaires utiles. */
         char ci[32]={0}, si[32]={0}, gi[32]={0};
         inet_ntop(AF_INET, &bp->bp_ciaddr, ci, sizeof(ci));
         inet_ntop(AF_INET, &bp->bp_siaddr, si, sizeof(si));
@@ -38,13 +46,18 @@ void try_dhcp(const unsigned char *p, int len)
         printf("    ciaddr=%s siaddr=%s giaddr=%s\n", ci, si, gi);
     }
 
-    int opt_off = 236; /* BOOTP fixed header size */
+    /* Les options DHCP commencent après l’en-tête BOOTP fixe (236 octets),
+       suivi du magic cookie (4 octets). */
+    int opt_off = 236;
+
+    /* Vérification du magic cookie DHCP = 0x63825363. */
     if (len < opt_off + 4) { printf("    (no DHCP magic cookie)\n"); return; }
     if (p[opt_off] != 0x63 || p[opt_off+1] != 0x82 || p[opt_off+2] != 0x53 || p[opt_off+3] != 0x63) {
         printf("    (no DHCP magic cookie)\n"); return;
     }
     int o = opt_off + 4;
 
+    /* Parse TLV (Tag-Length-Value) : on s’arrête dès qu’on a les options clés. */
     int seen_msg = 0, seen_reqip = 0, seen_lease = 0, seen_svr = 0;
 
     while (o < len) {

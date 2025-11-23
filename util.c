@@ -2,7 +2,8 @@
 #include <stdio.h>
 #include "decode.h"
 
-/* Affiche une ligne très concise (mode -v 1) : horodatage + longueur de trame */
+/* Affiche une ligne très concise (mode -v 1) : horodatage + longueur de trame.
+   Le payload n'est pas utilisé dans ce mode. */
 void print_summary_line(const struct pcap_pkthdr *h, const unsigned char *p) {
     (void)p; /* pas utilisé ici */
     printf("%ld.%06ld len=%u\n",
@@ -15,11 +16,14 @@ void print_mac(const unsigned char *m) {
            m[0], m[1], m[2], m[3], m[4], m[5]);
 }
 
-
+/* Hexdump pédagogique du payload :
+   - tronque l'affichage à max_bytes pour éviter les sorties énormes,
+   - affiche 16 octets par ligne avec une indentation. */
 void hexdump(const unsigned char *p, int len, int max_bytes) {
-    if (len > max_bytes) len = max_bytes;
+    if (len > max_bytes) len = max_bytes; /* limite volontaire */
+
     for (int i = 0; i < len; i++) {
-        if (i % 16 == 0) printf("    ");  
+        if (i % 16 == 0) printf("    "); /* nouvelle ligne / indentation */
         printf("%02x ", p[i]);
         if (i % 16 == 15) printf("\n");
     }

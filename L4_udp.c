@@ -6,12 +6,18 @@
 
 
 
-/* UDP handler: prints basic info and tries DNS/DHCP */
+/* Handler UDP :
+   - décode l’en-tête UDP (taille fixe),
+   - affiche selon la verbosité,
+   - tente une détection L7 simple par ports (DNS/DHCP). */
 void handle_udp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
 {
+    /* vérifier qu'on a au moins l'en-tête UDP complet. */
     if ((int)h->caplen < off + (int)sizeof(struct udphdr)) return;
 
     const struct udphdr *uh = (const struct udphdr *)(p + off);
+
+    /* Accès portable aux champs UDP via macros (compat.h). */
     unsigned short sp = UDP_SPORT(uh);
     unsigned short dp = UDP_DPORT(uh);
     unsigned short ulen = UDP_LEN(uh);
@@ -24,12 +30,12 @@ void handle_udp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
         printf("UDP: %u -> %u len=%u\n", sp, dp, ulen);
     }
 
-    /* payload pointer */
+    /* Début du payload après l'en-tête UDP. */
     const unsigned char *pl = p + off + (int)sizeof(struct udphdr);
     int plen = (int)h->caplen - (int)(pl - p);
     if (plen < 0) plen = 0;
 
-    /* simple app guesses by port */
+    /* Heuristique L7 par port : DNS=53, DHCP=67/68. */
     if (dp == 53 || sp == 53)           try_dns(pl, plen);
     if (dp == 67 || dp == 68 || sp == 67 || sp == 68) try_dhcp(pl, plen);
 }

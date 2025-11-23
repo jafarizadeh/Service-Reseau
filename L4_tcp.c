@@ -5,17 +5,29 @@
 #include "l7.h"
 
 
-/* TCP handler: prints flags and tries HTTP/FTP/SMTP by port */
+/* Handler TCP :
+   - décode l’en-tête TCP (taille variable via Data Offset),
+   - affiche selon la verbosité,
+   - tente une détection L7 simple par ports (HTTP/FTP/SMTP).
+   Remarque : pas de réassemblage de flux TCP (analyse paquet par paquet). */
 void handle_tcp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
 {
+    /* vérifier qu'on a au moins l'en-tête TCP minimal. */
     if ((int)h->caplen < off + (int)sizeof(struct tcphdr)) return;
 
     const struct tcphdr *th = (const struct tcphdr *)(p + off);
+
+    /* Accès portable aux champs TCP via macros (compat.h). */
     unsigned short sp = TCP_SPORT(th);
     unsigned short dp = TCP_DPORT(th);
+
+    /* Data Offset (taille réelle de l'en-tête TCP) en octets. */
     int doff = TCP_DOFF(th);
+
+    /* Sécurité : l'en-tête peut contenir des options => vérifier la longueur capturée. */
     if ((int)h->caplen < off + doff) return;
 
+    /* Affichage détaillé en v=3, résumé en v=2. */
     if (g_verbose == 3) {
         unsigned int opts = (doff > 20) ? (doff - 20) : 0;
         printf("TCP:\n");
@@ -42,12 +54,12 @@ void handle_tcp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
         printf("\n");
     }
 
-    /* payload pointer */
+    /* Début du payload après l'en-tête TCP (doff). */
     const unsigned char *pl = p + off + doff;
     int plen = (int)h->caplen - (int)(pl - p);
     if (plen < 0) plen = 0;
 
-    /* L7 guesses by port */
+    /* Heuristique L7 par port (simple et pédagogique). */
     if (dp == 80 || sp == 80) try_http(pl, plen);
     if (dp == 21 || sp == 21) try_ftp(pl, plen);
     if (dp == 25 || sp == 25) try_smtp(pl, plen);
