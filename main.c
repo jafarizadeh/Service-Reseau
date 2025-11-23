@@ -12,6 +12,12 @@
 int g_verbose = 2;
 static pcap_t *g_handle = NULL;
 
+/* performance counters */
+static unsigned long g_pkt_count = 0;
+static unsigned long g_byte_count = 0;
+static int g_started = 0;
+static struct timeval g_t0, g_t1;
+
 static void usage(const char *prog) {
     fprintf(stderr, "Usage: %s (-i <iface> | -o <pcap>) [-f <bpf>] [-v 1|2|3]\n", prog);
 }
@@ -35,8 +41,15 @@ static void on_sigint(int s) {
     if (g_handle) pcap_breakloop(g_handle);
 }
 
+/* pcap callback: update perf counters first, then decode */
 static void got_packet(u_char *user, const struct pcap_pkthdr *h, const u_char *p) {
     (void)user;
+
+    /* perf counters */
+    if (!g_started) { g_t0 = h->ts; g_started = 1; }
+    g_t1 = h->ts;
+    g_pkt_count++;
+    g_byte_count += h->len;
 
     if (g_verbose == 1) { print_summary_line(h, p); return; }
 
@@ -48,6 +61,34 @@ static void got_packet(u_char *user, const struct pcap_pkthdr *h, const u_char *
     else {
         if (g_verbose >= 2) printf("Unknown EtherType: 0x%04x\n", eth_type);
     }
+}
+
+static void print_perf_summary(void) {
+    printf("\n=== Performance summary ===\n");
+    printf("packets=%lu bytes=%lu\n", g_pkt_count, g_byte_count);
+
+    if (g_started) {
+        double dur = (g_t1.tv_sec - g_t0.tv_sec)
+                   + (g_t1.tv_usec - g_t0.tv_usec) / 1000000.0;
+        if (dur < 0) dur = 0; /* just in case */
+        printf("duration=%.3f s\n", dur);
+        if (dur > 0) {
+            double pps = g_pkt_count / dur;
+            double mbit = (g_byte_count * 8.0) / (1000.0 * 1000.0);
+            double mbitps = (dur > 0) ? (mbit / dur) : 0.0;
+            printf("rate: %.1f pkt/s, %.2f Mbit/s\n", pps, mbitps);
+        }
+    }
+
+    /* try to show pcap stats if available (live capture) */
+    if (g_handle) {
+        struct pcap_stat st;
+        if (pcap_stats(g_handle, &st) == 0) {
+            printf("pcap: ps_recv=%u ps_drop=%u ps_ifdrop=%u\n",
+                   st.ps_recv, st.ps_drop, st.ps_ifdrop);
+        }
+    }
+    printf("===========================\n");
 }
 
 int main(int argc, char **argv) {
@@ -66,11 +107,9 @@ int main(int argc, char **argv) {
     if (g_verbose < 1 || g_verbose > 3) g_verbose = 2;
 
     char errbuf[PCAP_ERRBUF_SIZE] = {0};
-    if (iface) {
-        g_handle = pcap_open_live(iface, 65535, 1, 1000, errbuf);
-    } else {
-        g_handle = pcap_open_offline(of, errbuf);
-    }
+    if (iface) g_handle = pcap_open_live(iface, 65535, 1, 1000, errbuf);
+    else       g_handle = pcap_open_offline(of, errbuf);
+
     if (!g_handle) { fprintf(stderr, "%s\n", errbuf); return 1; }
 
     if (pcap_datalink(g_handle) != DLT_EN10MB) {
@@ -87,6 +126,10 @@ int main(int argc, char **argv) {
     signal(SIGINT, on_sigint);
     if (pcap_loop(g_handle, -1, got_packet, NULL) == -1)
         fprintf(stderr, "pcap_loop error: %s\n", pcap_geterr(g_handle));
+
+    /* always print perf summary at the end */
+    print_perf_summary();
+
     pcap_close(g_handle);
     return 0;
 }
