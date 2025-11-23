@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
+#include "l7.h"
+
 
 /* TCP compatibility (BSD/macOS vs Linux) */
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
