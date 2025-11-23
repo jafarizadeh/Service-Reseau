@@ -1,4 +1,6 @@
+#define _DEFAULT_SOURCE
 #include <sys/types.h>
+#include <sys/time.h>
 #include <pcap/pcap.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,6 +10,11 @@
 #include <net/ethernet.h>
 
 #include "decode.h"
+
+/* Fallback in case ETHERTYPE_IPV6 is not defined */
+#ifndef ETHERTYPE_IPV6
+#define ETHERTYPE_IPV6 0x86DD
+#endif
 
 int g_verbose = 2;
 static pcap_t *g_handle = NULL;
@@ -42,12 +49,21 @@ static void on_sigint(int s) {
 }
 
 /* pcap callback: update perf counters first, then decode */
-
 static void got_packet(u_char *user, const struct pcap_pkthdr *h, const u_char *p)
 {
     (void)user;
 
+    /* update performance counters */
+    if (!g_started) {
+        g_t0 = h->ts;
+        g_started = 1;
+    }
+    g_t1 = h->ts;
+    g_pkt_count++;
+    g_byte_count += h->len;
+
     if (g_verbose == 1) {
+        /* very concise line for -v 1 */
         print_summary_line(h, p);
         return;
     }
@@ -57,7 +73,7 @@ static void got_packet(u_char *user, const struct pcap_pkthdr *h, const u_char *
 
     if (eth_type == ETHERTYPE_IP) {
         handle_ipv4(h, p, l2len);
-    } else if (eth_type == ETHERTYPE_IPV6) {   // <-- add this line
+    } else if (eth_type == ETHERTYPE_IPV6) {
         handle_ipv6(h, p, l2len);
     } else if (eth_type == ETHERTYPE_ARP) {
         handle_arp(h, p, l2len);
@@ -67,7 +83,6 @@ static void got_packet(u_char *user, const struct pcap_pkthdr *h, const u_char *
     }
 }
 
-
 static void print_perf_summary(void) {
     printf("\n=== Performance summary ===\n");
     printf("packets=%lu bytes=%lu\n", g_pkt_count, g_byte_count);
@@ -75,17 +90,17 @@ static void print_perf_summary(void) {
     if (g_started) {
         double dur = (g_t1.tv_sec - g_t0.tv_sec)
                    + (g_t1.tv_usec - g_t0.tv_usec) / 1000000.0;
-        if (dur < 0) dur = 0; /* just in case */
+        if (dur < 0) dur = 0; /* safety */
         printf("duration=%.3f s\n", dur);
         if (dur > 0) {
             double pps = g_pkt_count / dur;
             double mbit = (g_byte_count * 8.0) / (1000.0 * 1000.0);
-            double mbitps = (dur > 0) ? (mbit / dur) : 0.0;
+            double mbitps = mbit / dur;
             printf("rate: %.1f pkt/s, %.2f Mbit/s\n", pps, mbitps);
         }
     }
 
-    /* try to show pcap stats if available (live capture) */
+    /* show pcap stats if available (live capture only) */
     if (g_handle) {
         struct pcap_stat st;
         if (pcap_stats(g_handle, &st) == 0) {
@@ -129,6 +144,7 @@ int main(int argc, char **argv) {
     }
 
     signal(SIGINT, on_sigint);
+
     if (pcap_loop(g_handle, -1, got_packet, NULL) == -1)
         fprintf(stderr, "pcap_loop error: %s\n", pcap_geterr(g_handle));
 
