@@ -63,4 +63,12 @@ void handle_tcp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
     if (dp == 80 || sp == 80) try_http(pl, plen);
     if (dp == 21 || sp == 21) try_ftp(pl, plen);
     if (dp == 25 || sp == 25) try_smtp(pl, plen);
+
+    if (dp == 23 || sp == 23)   try_telnet(pl, plen);
+
+    if (dp == 110 || sp == 110) try_pop3(pl,  plen);
+    if (dp == 995 || sp == 995) printf("  POP3S (TLS)\n");  /* encrypted */
+
+    if (dp == 143 || sp == 143) try_imap(pl,  plen);
+    if (dp == 993 || sp == 993) printf("  IMAPS (TLS)\n");  /* encrypted */
 }

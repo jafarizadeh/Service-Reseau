@@ -6,15 +6,10 @@ CFLAGS   ?= -std=c11 -Wall -Wextra -O2 -MMD -MP
 LDFLAGS  ?=
 LDLIBS   ?= -lpcap
 
-SRCS := \
-  main.c \
-  L2.c \
-  L3_arp.c \
-  L3_ipv4.c \
-  L4_icmp.c \
-  L4_udp.c \
-  L4_tcp.c \
-  util.c
+SRCS = main.c L2.c L3_arp.c L3_ipv4.c L3_ipv6.c L4_icmp.c L4_udp.c L4_tcp.c \
+       L7_dns.c L7_dhcp.c L7_http.c L7_ftp.c L7_smtp.c \
+       L7_telnet.c L7_pop.c L7_imap.c util.c
+
 
 SRCS += $(wildcard L3_ipv6.c)
 SRCS += $(wildcard L7_*.c)

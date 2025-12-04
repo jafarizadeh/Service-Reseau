@@ -41,4 +41,9 @@ void handle_tcp  (const struct pcap_pkthdr *h, const unsigned char *p, int off);
 void hexdump(const unsigned char *p, int len, int max_bytes);
 void print_summary_line(const struct pcap_pkthdr *h, const unsigned char *p);
 
+
+void try_telnet(const unsigned char *p, int len);
+void try_pop3(const unsigned char *p, int len);
+void try_imap(const unsigned char *p, int len);
+
 #endif
