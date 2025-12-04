@@ -1,6 +1,5 @@
 #include "decode.h"
 #include <stdio.h>
-#include <string.h>
 #include <arpa/inet.h>
 #include <netinet/ip6.h>
 
@@ -16,11 +15,11 @@ void handle_ipv6(const struct pcap_pkthdr *h, const unsigned char *p, int ip6_of
     inet_ntop(AF_INET6, &ip6->ip6_dst, dst6, sizeof(dst6));
 
     if (g_verbose == 3) {
-        /* ip6_flow contient version + traffic class + flow label (big-endian). */
         uint32_t vtf = ntohl(ip6->ip6_flow);
         unsigned int ver  = (vtf >> 28) & 0xF;
         unsigned int tcls = (vtf >> 20) & 0xFF;
         unsigned int flow = vtf & 0xFFFFF;
+
         printf("IPv6: %s -> %s\n", src6, dst6);
         printf("  version=%u tclass=%u flow=0x%05x\n", ver, tcls, flow);
         printf("  payload-length=%u next-header=%u hop-limit=%u\n",
@@ -38,10 +37,9 @@ void handle_ipv6(const struct pcap_pkthdr *h, const unsigned char *p, int ip6_of
     }
 
     /* En-tête IPv6 fixe = 40 octets ; on ignore volontairement les extension headers. */
-    int l4off = ip6_off + 40;
+    int l4off = ip6_off + (int)sizeof(struct ip6_hdr);
     int nh = ip6->ip6_nxt;
 
-    /* Dispatch L4 selon Next Header. */
     if (nh == IPPROTO_TCP)
         handle_tcp(h, p, l4off);
     else if (nh == IPPROTO_UDP)

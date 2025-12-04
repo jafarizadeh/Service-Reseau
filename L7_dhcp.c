@@ -9,9 +9,8 @@
    Objectif : affichage pédagogique, sans décodage exhaustif. */
 void try_dhcp(const unsigned char *p, int len)
 {
-
-    /* l’en-tête BOOTP a une taille fixe (236 octets). */
-    if (len < (int)sizeof(struct bootp)) {
+    /* L'en-tête BOOTP “classique” fait 236 octets (jusqu'à bp_file). */
+    if (len < 236) {
         printf("  DHCP/BOOTP (truncated)\n");
         return;
     }
@@ -36,7 +35,6 @@ void try_dhcp(const unsigned char *p, int len)
     }
 
     if (g_verbose == 3) {
-        /* En v=3 on affiche aussi les champs BOOTP secondaires utiles. */
         char ci[32]={0}, si[32]={0}, gi[32]={0};
         inet_ntop(AF_INET, &bp->bp_ciaddr, ci, sizeof(ci));
         inet_ntop(AF_INET, &bp->bp_siaddr, si, sizeof(si));
@@ -46,14 +44,18 @@ void try_dhcp(const unsigned char *p, int len)
         printf("    ciaddr=%s siaddr=%s giaddr=%s\n", ci, si, gi);
     }
 
-    /* Les options DHCP commencent après l’en-tête BOOTP fixe (236 octets),
-       suivi du magic cookie (4 octets). */
+    /* Les options DHCP commencent après les 236 octets fixes,
+       le “magic cookie” est sur les 4 octets suivants. */
     int opt_off = 236;
 
-    /* Vérification du magic cookie DHCP = 0x63825363. */
-    if (len < opt_off + 4) { printf("    (no DHCP magic cookie)\n"); return; }
-    if (p[opt_off] != 0x63 || p[opt_off+1] != 0x82 || p[opt_off+2] != 0x53 || p[opt_off+3] != 0x63) {
-        printf("    (no DHCP magic cookie)\n"); return;
+    if (len < opt_off + 4) {
+        printf("    (no DHCP magic cookie)\n");
+        return;
+    }
+    if (p[opt_off] != 0x63 || p[opt_off+1] != 0x82 ||
+        p[opt_off+2] != 0x53 || p[opt_off+3] != 0x63) {
+        printf("    (no DHCP magic cookie)\n");
+        return;
     }
     int o = opt_off + 4;
 

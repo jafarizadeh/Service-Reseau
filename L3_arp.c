@@ -1,6 +1,5 @@
 #include "decode.h"
 #include <stdio.h>
-#include <arpa/inet.h>
 
 void handle_arp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
 {
@@ -16,8 +15,12 @@ void handle_arp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
     unsigned char  plen  = a[5];
     unsigned short oper  = (unsigned short)((a[6] << 8) | a[7]);
 
+    /* On ne sait vraiment afficher que le cas Ethernet (hlen=6). */
+    if (hlen < 6)
+        return;
+
     /* Longueur totale ARP dépendante de HLEN/PLEN : 8 + SHA+SPA+THA+TPA. */
-    int need = 8 + hlen + plen + hlen + plen; 
+    int need = 8 + hlen + plen + hlen + plen;
     if ((int)h->caplen < off + need)
         return;
 
@@ -29,7 +32,8 @@ void handle_arp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
 
     if (g_verbose >= 2) {
         printf("ARP: htype=%u ptype=0x%04x hlen=%u plen=%u op=%u\n",
-               (unsigned)htype, (unsigned)ptype, (unsigned)hlen, (unsigned)plen, (unsigned)oper);
+               (unsigned)htype, (unsigned)ptype, (unsigned)hlen,
+               (unsigned)plen, (unsigned)oper);
     } else {
         printf("ARP\n");
     }
@@ -38,7 +42,6 @@ void handle_arp(const struct pcap_pkthdr *h, const unsigned char *p, int off)
     print_mac(sha);
     printf("\n");
 
-    /* Cas courant : protocole IPv4 (PLEN=4). */
     if (plen == 4) {
         printf("  Sender IP : %u.%u.%u.%u\n", spa[0], spa[1], spa[2], spa[3]);
     } else {
